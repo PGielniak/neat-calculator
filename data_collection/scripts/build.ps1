@@ -1,0 +1,1 @@
+cd e:\src\neat-calculator\data_collection\app; .\gradlew.bat assembleDebug
