@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private val sensorDataList = mutableListOf<SensorData>()
     private var isRecording = false
     private var recordingStartTime = 0L
+    private var currentRecordingTimestamp = ""
     
     private val timestampHandler = Handler(Looper.getMainLooper())
     private val timestampUpdateRunnable = object : Runnable {
@@ -158,24 +159,20 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         recordButton.isEnabled = false
         sensorDataList.clear()
         
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val videoFileName = "video_$timestamp.mp4"
+        val timestamp = System.currentTimeMillis().toString()
+        currentRecordingTimestamp = timestamp
         
-        val contentValues = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, videoFileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SensorRecording")
-            }
+        // Use direct file output for consistent naming
+        val videoDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "SensorRecording")
+        if (!videoDir.exists()) {
+            videoDir.mkdirs()
         }
+        val videoFile = File(videoDir, "$timestamp.mp4")
         
-        val mediaStoreOutputOptions = MediaStoreOutputOptions
-            .Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-            .setContentValues(contentValues)
-            .build()
+        val fileOutputOptions = FileOutputOptions.Builder(videoFile).build()
         
         recording = videoCapture.output
-            .prepareRecording(this, mediaStoreOutputOptions)
+            .prepareRecording(this, fileOutputOptions)
             .apply {
                 if (ActivityCompat.checkSelfPermission(
                         this@MainActivity,
@@ -203,7 +200,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                         if (!recordEvent.hasError()) {
                             val msg = "Video saved: ${recordEvent.outputResults.outputUri}"
                             Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                            saveSensorData(timestamp)
+                            saveSensorData(currentRecordingTimestamp)
                         } else {
                             recording?.close()
                             recording = null
@@ -234,7 +231,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     
     private fun saveSensorData(timestamp: String) {
         try {
-            val fileName = "sensor_data_$timestamp.json"
+            val fileName = "$timestamp.json"
             val gson = Gson()
             val jsonData = gson.toJson(sensorDataList)
             
