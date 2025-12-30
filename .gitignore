@@ -96,3 +96,5 @@ Thumbs.db
 
 .kotlin
 
+__pycache__/
+.venv/
