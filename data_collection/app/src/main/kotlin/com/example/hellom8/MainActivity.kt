@@ -48,13 +48,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var saveExecutor: ExecutorService
     
     private val sensorDataList = mutableListOf<SensorData>()
     private var isRecording = false
     private var recordingStartTime = 0L
     private var currentRecordingTimestamp = ""
+    private var recordingSegmentNumber = 0
+    private var isSegmentTransition = false
     
     private val timestampHandler = Handler(Looper.getMainLooper())
+    private val autoSaveHandler = Handler(Looper.getMainLooper())
+    private val AUTO_SAVE_INTERVAL = 60000L // 1 minute in milliseconds
     private val timestampUpdateRunnable = object : Runnable {
         override fun run() {
             if (isRecording) {
@@ -65,12 +70,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
     
+    private val autoSaveRunnable = object : Runnable {
+        override fun run() {
+            if (isRecording) {
+                // Save current sensor data
+                saveSensorDataSegment()
+                
+                // Restart video recording for next segment
+                restartVideoRecording()
+                
+                // Schedule next auto-save
+                autoSaveHandler.postDelayed(this, AUTO_SAVE_INTERVAL)
+            }
+        }
+    }
+    
     private var lastAccelX = 0f
     private var lastAccelY = 0f
     private var lastAccelZ = 0f
     private var lastGyroX = 0f
     private var lastGyroY = 0f
     private var lastGyroZ = 0f
+    
+    private var lastSensorSampleTime = 0L
+    private val SAMPLE_RATE_HZ = 50 // 50Hz as per UCI HAR dataset
+    private val SAMPLE_INTERVAL_MS = 1000L / SAMPLE_RATE_HZ // 20ms
     
     private val REQUIRED_PERMISSIONS = mutableListOf(
         Manifest.permission.CAMERA,
@@ -100,6 +124,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         
         cameraExecutor = Executors.newSingleThreadExecutor()
+        saveExecutor = Executors.newSingleThreadExecutor()
         
         // Request permissions
         if (allPermissionsGranted()) {
@@ -149,11 +174,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
     
     private fun registerSensors() {
+        // Use SENSOR_DELAY_GAME (~50Hz) to match UCI HAR dataset specification
+        // Additional rate limiting in onSensorChanged ensures exact 50Hz
         accelerometer?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
         gyroscope?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
     }
     
@@ -165,6 +192,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         
         val timestamp = System.currentTimeMillis().toString()
         currentRecordingTimestamp = timestamp
+        recordingSegmentNumber = 0
         
         // Use direct file output for consistent naming
         val videoDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "SensorRecording")
@@ -186,36 +214,65 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     withAudioEnabled()
                 }
             }
-            .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
-                when (recordEvent) {
-                    is VideoRecordEvent.Start -> {
+            .start(ContextCompat.getMainExecutor(this), createRecordingListener())
+    }
+    
+    private fun stopRecording() {
+        isSegmentTransition = false // Ensure this is marked as user stop, not transition
+        recording?.stop()
+        recording = null
+    }
+    
+    private fun createRecordingListener() = androidx.core.util.Consumer<VideoRecordEvent> { recordEvent ->
+            when (recordEvent) {
+                is VideoRecordEvent.Start -> {
+                    if (recordingSegmentNumber == 0) {
+                        // First segment
                         isRecording = true
                         recordingStartTime = System.currentTimeMillis()
                         timestampHandler.post(timestampUpdateRunnable)
-                        runOnUiThread {
-                            recordButton.apply {
-                                text = "Stop Recording"
-                                isEnabled = true
-                            }
-                            statusText.text = "Recording..."
+                        autoSaveHandler.postDelayed(autoSaveRunnable, AUTO_SAVE_INTERVAL)
+                    } else {
+                        // Subsequent segments
+                        isSegmentTransition = false
+                    }
+                    runOnUiThread {
+                        recordButton.apply {
+                            text = "Stop Recording"
+                            isEnabled = true
+                        }
+                        statusText.text = if (recordingSegmentNumber == 0) {
+                            "Recording... (auto-save enabled)"
+                        } else {
+                            "Recording... segment $recordingSegmentNumber"
                         }
                     }
-                    is VideoRecordEvent.Finalize -> {
-                        if (!recordEvent.hasError()) {
+                }
+                is VideoRecordEvent.Finalize -> {
+                    if (!recordEvent.hasError()) {
+                        if (!isSegmentTransition) {
+                            // Final stop - save remaining data
                             val msg = "Video saved: ${recordEvent.outputResults.outputUri}"
                             Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                            saveSensorData(currentRecordingTimestamp)
-                        } else {
-                            recording?.close()
-                            recording = null
-                            Toast.makeText(
-                                this,
-                                "Video recording error: ${recordEvent.error}",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            val finalData = sensorDataList.toList()
+                            saveExecutor.execute {
+                                saveSensorDataInBackground(currentRecordingTimestamp, finalData)
+                            }
                         }
+                    } else {
+                        recording?.close()
+                        recording = null
+                        Toast.makeText(
+                            this,
+                            "Video recording error: ${recordEvent.error}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    
+                    if (!isSegmentTransition) {
                         isRecording = false
                         timestampHandler.removeCallbacks(timestampUpdateRunnable)
+                        autoSaveHandler.removeCallbacks(autoSaveRunnable)
                         runOnUiThread {
                             recordButton.apply {
                                 text = "Start Recording"
@@ -228,9 +285,101 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
     }
     
-    private fun stopRecording() {
+    private fun restartVideoRecording() {
+        // Mark that we're doing a segment transition, not stopping recording
+        isSegmentTransition = true
+        
+        // Stop current recording
         recording?.stop()
-        recording = null
+        
+        // Increment segment counter
+        recordingSegmentNumber++
+        
+        // Start new video recording with new segment name
+        val videoCapture = this.videoCapture ?: return
+        val segmentTimestamp = "${currentRecordingTimestamp}_seg${recordingSegmentNumber}"
+        
+        val videoDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "SensorRecording")
+        if (!videoDir.exists()) {
+            videoDir.mkdirs()
+        }
+        val videoFile = File(videoDir, "$segmentTimestamp.mp4")
+        
+        val fileOutputOptions = FileOutputOptions.Builder(videoFile).build()
+        
+        recording = videoCapture.output
+            .prepareRecording(this, fileOutputOptions)
+            .apply {
+                if (ActivityCompat.checkSelfPermission(
+                        this@MainActivity,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    withAudioEnabled()
+                }
+            }
+            .start(ContextCompat.getMainExecutor(this), createRecordingListener())
+    }
+    
+    private fun saveSensorDataSegment() {
+        if (sensorDataList.isEmpty()) return
+        
+        val segmentTimestamp = "${currentRecordingTimestamp}_seg${recordingSegmentNumber}"
+        val sampleCount = sensorDataList.size
+        
+        // Create a copy of the data to save in background
+        val dataToSave = sensorDataList.toList()
+        
+        // Save on background thread to avoid UI freeze
+        saveExecutor.execute {
+            saveSensorDataInBackground(segmentTimestamp, dataToSave)
+            
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "Auto-saved segment ${recordingSegmentNumber} ($sampleCount samples)",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+    
+    private fun saveSensorDataInBackground(timestamp: String, data: List<SensorData>) {
+        try {
+            val fileName = "$timestamp.json"
+            val gson = Gson()
+            val jsonData = gson.toJson(data)
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+ - use MediaStore
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/SensorRecording")
+                }
+                
+                val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), contentValues)
+                uri?.let {
+                    contentResolver.openOutputStream(it)?.use { outputStream ->
+                        outputStream.write(jsonData.toByteArray())
+                    }
+                }
+            } else {
+                // Android 9 and below - use external storage
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SensorRecording")
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+                val file = File(dir, fileName)
+                FileWriter(file).use { writer ->
+                    writer.write(jsonData)
+                }
+            }
+        } catch (e: Exception) {
+            runOnUiThread {
+                Toast.makeText(this, "Error saving sensor data: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
     
     private fun saveSensorData(timestamp: String) {
@@ -311,19 +460,23 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 )
             }
             
-            // Record data if recording
+            // Record data if recording at constant 50Hz rate (UCI HAR dataset specification)
             if (isRecording) {
-                val sensorData = SensorData(
-                    timestamp = currentTime,
-                    timestampNanos = nanoTime,
-                    accelerometerX = lastAccelX,
-                    accelerometerY = lastAccelY,
-                    accelerometerZ = lastAccelZ,
-                    gyroscopeX = lastGyroX,
-                    gyroscopeY = lastGyroY,
-                    gyroscopeZ = lastGyroZ
-                )
-                sensorDataList.add(sensorData)
+                // Only save if enough time has elapsed (20ms for 50Hz)
+                if (currentTime - lastSensorSampleTime >= SAMPLE_INTERVAL_MS) {
+                    val sensorData = SensorData(
+                        timestamp = currentTime,
+                        timestampNanos = nanoTime,
+                        accelerometerX = lastAccelX,
+                        accelerometerY = lastAccelY,
+                        accelerometerZ = lastAccelZ,
+                        gyroscopeX = lastGyroX,
+                        gyroscopeY = lastGyroY,
+                        gyroscopeZ = lastGyroZ
+                    )
+                    sensorDataList.add(sensorData)
+                    lastSensorSampleTime = currentTime
+                }
             }
         }
     }
@@ -356,8 +509,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         timestampHandler.removeCallbacks(timestampUpdateRunnable)
+        autoSaveHandler.removeCallbacks(autoSaveRunnable)
         sensorManager.unregisterListener(this)
         cameraExecutor.shutdown()
+        saveExecutor.shutdown()
     }
     
     companion object {
