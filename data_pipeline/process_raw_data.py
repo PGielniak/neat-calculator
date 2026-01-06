@@ -1,3 +1,5 @@
+import hashlib
+import uuid
 import pandas as pd
 import os
 import json
@@ -6,7 +8,7 @@ from typing import List, Dict, Any, Tuple
 import logging
 import numpy as np
 from helper_functions import extract_features
-
+from infra.db import database_utils
 # Configure logger
 logging.basicConfig(
     level=logging.INFO,
@@ -17,7 +19,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
 
 class SensorRecording(BaseModel):
     accelerometerX: float
@@ -35,13 +36,17 @@ sensor_cols = [
     "gyroscopeX","gyroscopeY","gyroscopeZ",
     ]
 
-def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str) -> pd.DataFrame:
+def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str, pipeline_run_id: uuid.UUID=uuid.uuid4()) -> pd.DataFrame:
     """
     Process raw sensor data files from the specified directory and return a DataFrame
     containing the extracted features and labels.
     """
+
+    
     logger.info(f"Starting processing of raw data in directory: {raw_data_file_dir}")
     logger.info(f"Using labels from: {labels_csv_path}")
+
+    
     merged_data = merge_json_files(raw_data_file_dir)
     labeled_data = label_data(merged_data, labels_csv_path=labels_csv_path)
     del merged_data  # free up memory
@@ -56,7 +61,7 @@ def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str) -> pd.
     del sliding_windows, feature_array, labels_array  # free up memory
     renamed_features = rename_features(extracted_features)
     del extracted_features  # free up memory
-    intersect_with_kaggle = filter_features_to_match_kaggle(renamed_features)   
+    intersect_with_kaggle = filter_features_to_match_kaggle(renamed_features, kaggle_csv_path=kaggle_csv_path)   
     del renamed_features  # free up memory
     
     feature_df = pd.DataFrame(intersect_with_kaggle)
@@ -281,7 +286,34 @@ def rename_features(extracted_features: pd.DataFrame) -> pd.DataFrame:
     logger.info("Feature renaming completed.")
     return renamed
         
+
+def filter_features_to_match_kaggle(renamed_features: pd.DataFrame, kaggle_csv_path: str) -> pd.DataFrame:
+    logger.info(f"Filtering features to match Kaggle dataset from: {kaggle_csv_path}")
+    kaggle_df = pd.read_csv(kaggle_csv_path)
+    kaggle_columns = set(kaggle_df.columns)
+    logger.debug(f"Kaggle dataset columns: {kaggle_columns}")
+    my_columns = set(renamed_features.columns)
+    filtered_columns = renamed_features.columns.intersection(kaggle_df.columns)
+    filtered_features = renamed_features.reindex(columns=filtered_columns)
+    logger.info(f"Filtered feature shape: {filtered_features.shape}")
+    logger.info("Feature filtering completed.")
+    return filtered_features
+
+def save_processed_data_to_db(feature_df: pd.DataFrame, type_of_database: str = "sqlite"):
+    logger.info(f"Saving processed data to {type_of_database} database.")
+    # get database methods from database_utils
+    database_methods = database_utils.database_methods_dict
+    if type_of_database not in database_methods:
+        logger.error(f"Unsupported database type: {type_of_database}")
+        raise ValueError(f"Unsupported database type: {type_of_database}")
+    logger.debug(f"Database methods available: {database_methods}")
+    db_method = getattr(database_utils, database_methods[type_of_database])
+    logger.info(f"Using database method: {db_method}")
     
+    try:
+        db_method(feature_df)
+    except Exception as e:
+        logger.error(f"Error saving data to database: {e}")
+        raise
     
-    
-    
+    logger.info("Processed data saved to database.")
