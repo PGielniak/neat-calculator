@@ -2,6 +2,7 @@
 from datetime import datetime
 from typing import Any, List, Union
 from pydantic import BaseModel
+import pandas as pd
 
 from infra.db.database_utils import DatabaseEngine, DatabaseRepository
 
@@ -35,7 +36,7 @@ def initialize_tables(db_engine: DatabaseEngine) -> None:
                 file_name TEXT NOT NULL,
                 pipeline_run_id TEXT NOT NULL,
                 processed_at DATETIME NOT NULL,
-                checksum TEXT,
+                checksum TEXT UNIQUE,
                 FOREIGN KEY (pipeline_run_id) REFERENCES pipeline_runs(run_id)
             )
         """))
@@ -44,7 +45,7 @@ def initialize_tables(db_engine: DatabaseEngine) -> None:
     
     print("Database tables initialized successfully")
 
-def save_to_db(data: Union[BaseModel, List[BaseModel], dict, List[dict]], table_name: str, db_engine: DatabaseEngine) -> None:
+def save_to_db(data: Union[BaseModel, List[BaseModel], dict, List[dict], pd.DataFrame], table_name: str, db_engine: DatabaseEngine) -> None:
     """
     Saves the given data to the specified database table.
     Handles both Pydantic models and dictionaries.
@@ -54,8 +55,10 @@ def save_to_db(data: Union[BaseModel, List[BaseModel], dict, List[dict]], table_
     repository = DatabaseRepository(db_engine)
     
     try:
+        if isinstance(data, pd.DataFrame):
+            repository.save_dataframe(data, table_name)
         # Convert Pydantic model(s) to dict(s)
-        if isinstance(data, list):
+        elif isinstance(data, list):
             # List of records
             records = []
             for item in data:

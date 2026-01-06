@@ -7,7 +7,7 @@ from pydantic import BaseModel, ValidationError
 from typing import List, Dict, Any, Tuple
 import logging
 import numpy as np
-from helper_functions import extract_features
+from data_pipeline.helper_functions import extract_features
 from infra.db import database_utils
 # Configure logger
 logging.basicConfig(
@@ -36,7 +36,7 @@ sensor_cols = [
     "gyroscopeX","gyroscopeY","gyroscopeZ",
     ]
 
-def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str, pipeline_run_id: uuid.UUID=uuid.uuid4()) -> pd.DataFrame:
+def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str, kaggle_csv_path: str, skipped_files: List[str]=[]) -> pd.DataFrame:
     """
     Process raw sensor data files from the specified directory and return a DataFrame
     containing the extracted features and labels.
@@ -47,7 +47,7 @@ def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str, pipeli
     logger.info(f"Using labels from: {labels_csv_path}")
 
     
-    merged_data = merge_json_files(raw_data_file_dir)
+    merged_data = merge_json_files(raw_data_file_dir, skipped_files=skipped_files)
     labeled_data = label_data(merged_data, labels_csv_path=labels_csv_path)
     del merged_data  # free up memory
     deduped_data = remove_duplicates(labeled_data,sensor_cols=sensor_cols)
@@ -67,7 +67,7 @@ def process_raw_sensor_data(raw_data_file_dir: str, labels_csv_path: str, pipeli
     feature_df = pd.DataFrame(intersect_with_kaggle)
     return feature_df
 
-def validate_directory(directory: str):
+def validate_directory(directory: str, skipped_files: list[str]=[]) -> None:
     logger.info(f"Validating directory: {directory}")
     if not os.path.exists(directory):
         logger.error(f"The directory {directory} does not exist.")
@@ -76,14 +76,21 @@ def validate_directory(directory: str):
     if not os.path.isdir(directory):
         logger.error(f"The path {directory} is not a directory.")
         raise NotADirectoryError(f"The path {directory} is not a directory.")
-        logger.info(f"Path {directory} is a directory.")    
+    logger.info(f"Path {directory} is a directory.")    
     if not os.listdir(directory):
         logger.error(f"The directory {directory} is empty.")
         raise ValueError(f"The directory {directory} is empty.")
     logger.info(f"Directory {directory} is not empty.")
     sensor_data_files = os.listdir(directory)
     
+    if len(skipped_files) == len(sensor_data_files):
+        logger.error("All files in the directory are marked to be skipped. No files to validate.")
+        raise ValueError("All files in the directory are marked to be skipped. No files to validate.")
+    
     for file_name in sensor_data_files:
+        if file_name in skipped_files:
+            logger.info(f"Skipping validation for file: {file_name}")
+            continue
         logger.debug(f"Validating file: {file_name}")
         if not file_name.endswith('.json'):
             logger.error(f"The file {file_name} is not a JSON file.")
@@ -118,14 +125,21 @@ def validate_directory(directory: str):
         
     logger.info(f"All files in directory {directory} are valid.")
 
-def merge_json_files(directory: str) -> list[SensorRecording]:
-    validate_directory(directory)
+def merge_json_files(directory: str, skipped_files: list[str]=[]) -> list[SensorRecording]:
+    
+    if len(skipped_files) > 0:
+        logger.info(f"Skipping files: {skipped_files}")
+        
+    validate_directory(directory, skipped_files)
     
     logger.info(f"Merging JSON files from directory: {directory}")
     sensor_data_files = os.listdir(directory)
     sensor_data_files.sort()
     merged_data = []
     for file_name in sensor_data_files:
+        if file_name in skipped_files:
+            logger.info(f"Skipping file: {file_name}")
+            continue
         file_path = os.path.join(directory, file_name)
         logger.info(f"Merging sensor data file: {file_path}")
         
