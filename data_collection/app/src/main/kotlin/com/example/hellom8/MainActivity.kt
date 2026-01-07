@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var previewView: PreviewView
     private lateinit var recordButton: Button
+    private lateinit var recordSensorOnlyButton: Button
     private lateinit var statusText: TextView
     private lateinit var sensorDataText: TextView
     private lateinit var timestampOverlay: TimestampOverlay
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     
     private val sensorDataList = mutableListOf<SensorData>()
     private var isRecording = false
+    private var isRecordingSensorOnly = false
     private var recordingStartTime = 0L
     private var currentRecordingTimestamp = ""
     private var recordingSegmentNumber = 0
@@ -114,6 +116,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         
         previewView = findViewById(R.id.previewView)
         recordButton = findViewById(R.id.recordButton)
+        recordSensorOnlyButton = findViewById(R.id.recordSensorOnlyButton)
         statusText = findViewById(R.id.statusText)
         sensorDataText = findViewById(R.id.sensorDataText)
         timestampOverlay = findViewById(R.id.timestampOverlay)
@@ -139,6 +142,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 stopRecording()
             } else {
                 startRecording()
+            }
+        }
+        
+        recordSensorOnlyButton.setOnClickListener {
+            if (isRecordingSensorOnly) {
+                stopSensorOnlyRecording()
+            } else {
+                startSensorOnlyRecording()
             }
         }
     }
@@ -434,6 +445,93 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
     
+    private fun startSensorOnlyRecording() {
+        recordSensorOnlyButton.isEnabled = false
+        recordButton.isEnabled = false // Disable video recording during sensor-only mode
+        sensorDataList.clear()
+        
+        val timestamp = System.currentTimeMillis().toString()
+        currentRecordingTimestamp = timestamp
+        recordingSegmentNumber = 0
+        
+        isRecordingSensorOnly = true
+        recordingStartTime = System.currentTimeMillis()
+        
+        // Start auto-save for sensor data
+        autoSaveHandler.postDelayed(autoSaveRunnable, AUTO_SAVE_INTERVAL)
+        
+        runOnUiThread {
+            recordSensorOnlyButton.text = "Stop Sensor Recording"
+            recordSensorOnlyButton.isEnabled = true
+            statusText.text = "Recording sensors only... (no video)"
+            // Don't keep screen on for sensor-only mode to save battery
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+    
+    private fun stopSensorOnlyRecording() {
+        isRecordingSensorOnly = false
+        autoSaveHandler.removeCallbacks(autoSaveRunnable)
+        
+        // Save final sensor data
+        val finalData = sensorDataList.toList()
+        saveExecutor.execute {
+            saveSensorOnlyDataInBackground(currentRecordingTimestamp, finalData)
+        }
+        
+        runOnUiThread {
+            recordSensorOnlyButton.text = "Record Sensors Only"
+            recordSensorOnlyButton.isEnabled = true
+            recordButton.isEnabled = true
+            statusText.text = "Sensor recording stopped"
+            Toast.makeText(this, "Sensor data saved: ${finalData.size} samples", Toast.LENGTH_LONG).show()
+            // Restore keep screen on flag
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+    
+    private fun saveSensorOnlyDataInBackground(timestamp: String, data: List<SensorData>) {
+        try {
+            val fileName = "$timestamp.json"
+            val gson = Gson()
+            val jsonData = gson.toJson(data)
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10+ - use MediaStore with different folder
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/rawSensorRecordings")
+                }
+                
+                val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), contentValues)
+                uri?.let {
+                    contentResolver.openOutputStream(it)?.use { outputStream ->
+                        outputStream.write(jsonData.toByteArray())
+                    }
+                }
+            } else {
+                // Android 9 and below - use external storage
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "rawSensorRecordings")
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+                val file = File(dir, fileName)
+                FileWriter(file).use { writer ->
+                    writer.write(jsonData)
+                }
+            }
+            
+            runOnUiThread {
+                Toast.makeText(this, "Sensor-only data saved (${data.size} samples)", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            runOnUiThread {
+                Toast.makeText(this, "Error saving sensor data: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
     override fun onSensorChanged(event: SensorEvent?) {
         event?.let {
             val currentTime = System.currentTimeMillis()
@@ -461,7 +559,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             
             // Record data if recording at constant 50Hz rate (UCI HAR dataset specification)
-            if (isRecording) {
+            // Works for both video and sensor-only modes
+            if (isRecording || isRecordingSensorOnly) {
                 // Only save if enough time has elapsed (20ms for 50Hz)
                 if (currentTime - lastSensorSampleTime >= SAMPLE_INTERVAL_MS) {
                     val sensorData = SensorData(

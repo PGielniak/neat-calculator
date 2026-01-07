@@ -1,3 +1,4 @@
+
 import logging
 import uuid
 import os
@@ -14,8 +15,8 @@ from data_pipeline.process_raw_data import process_raw_sensor_data
 
 argparser = argparse.ArgumentParser(description="Process raw sensor data files.")
 argparser.add_argument("--raw_data_file_dir", type=str, required=True, help="Directory containing raw sensor data files.")
-argparser.add_argument("--labels_csv_path", type=str, required=True, help="Path to the labels CSV file.")
 argparser.add_argument("--kaggle_csv_path", type=str, required=True, help="Path to the Kaggle CSV file.")
+argparser.add_argument("--subject", type=str, required=True, help="Subject identifier.")
 args = argparser.parse_args()
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,6 @@ database_engine = DatabaseFactory.create_engine(
     db_type='sqlite',
     db_path='sensor_features.db'
 )
-
-logger.info("Initializing database tables if they do not exist.")
-initialize_tables(database_engine)
-
 pipeline_run = PipelineRun(
     run_id=str(uuid.uuid4()),
     status="STARTED",
@@ -79,14 +76,13 @@ logger.info(f"Saving Processed Files info to database.")
 
 sensor_data = process_raw_sensor_data(
     raw_data_file_dir=args.raw_data_file_dir,
-    labels_csv_path=args.labels_csv_path,
     kaggle_csv_path=args.kaggle_csv_path,
     skipped_files=skipped_files
 )
-
+sensor_data['Subject'] = args.subject
 try:
     logger.info(f"Saving processed sensor data to database.")
-    save_to_db(sensor_data, table_name="training_data_labeled", db_engine=database_engine)
+    save_to_db(sensor_data, table_name="predictions", db_engine=database_engine)
     pipeline_run.status = "COMPLETED"
 except Exception as e:
     logger.error(f"Error saving processed sensor data to database: {e}")
