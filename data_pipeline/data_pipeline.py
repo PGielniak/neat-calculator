@@ -9,13 +9,17 @@ from data_pipeline.database import save_to_db, initialize_tables, update_pipelin
 from infra.db.database_utils import DatabaseFactory
 from datetime import datetime
 from sqlalchemy.exc import IntegrityError
+from storage_account_helpers import download_blob_to_dir
+
 
 from data_pipeline.process_raw_data import process_raw_sensor_data
 
 argparser = argparse.ArgumentParser(description="Process raw sensor data files.")
-argparser.add_argument("--raw_data_file_dir", type=str, required=True, help="Directory containing raw sensor data files.")
-argparser.add_argument("--labels_csv_path", type=str, required=True, help="Path to the labels CSV file.")
-argparser.add_argument("--kaggle_csv_path", type=str, required=True, help="Path to the Kaggle CSV file.")
+argparser.add_argument("--raw_data_file_dir", type=str, required=False, help="Directory containing raw sensor data files.")
+argparser.add_argument("--raw_data_storage_account_container_uri", type=str, required=False, help="Storage account container uri containing raw sensor data files. eg. wasbs://<container>@<storage_account>.blob.core.windows.net/")
+argparser.add_argument("--labels_csv_path", type=str, required=False, help="Path to the labels CSV file.")
+argparser.add_argument("--labels_storage_account_blob_uri", type=str, required=False, help="Storage account blob uri for the labels CSV file. eg. wasbs://<container>@<storage_account>.blob.core.windows.net/path/to/labels.csv")
+argparser.add_argument("--kaggle_csv_path", type=str, required=True, help="Path to the Kaggle CSV file.", default="kaggle.csv")
 args = argparser.parse_args()
 
 logger = logging.getLogger(__name__)
@@ -41,12 +45,38 @@ logger.info(f"Saving Pipeline Run info to database.")
 
 save_to_db(pipeline_run, table_name="pipeline_runs", db_engine=database_engine)
 
-sensor_data_files = os.listdir(args.raw_data_file_dir)
+if not args.raw_data_file_dir and not args.raw_data_storage_account_container_uri:
+    logger.error("Either --raw_data_file_dir or --raw_data_storage_account_container_uri must be provided.")
+    raise ValueError("Either --raw_data_file_dir or --raw_data_storage_account_container_uri must be provided.")
+
+raw_data_dir = args.raw_data_file_dir if args.raw_data_file_dir else "raw_sensor_data_files"
+if args.raw_data_storage_account_container_uri:
+    logger.info("Downloading raw data files from storage account container URI")
+    # storage account name wasbs://<container>@<storage_account>.blob.core.windows.net/
+    download_blob_to_dir(
+        storage_account_blob_uri=args.raw_data_storage_account_container_uri,
+        download_dir="raw_sensor_data_files"
+    )
+    
+if not args.labels_csv_path and not args.labels_storage_account_blob_uri:
+    logger.error("Either --labels_csv_path or --labels_storage_account_blob_uri must be provided.")
+    raise ValueError("Either --labels_csv_path or --labels_storage_account_blob_uri must be provided.")
+
+labels_csv_path = args.labels_csv_path if args.labels_csv_path else "labels.csv"
+if args.labels_storage_account_blob_uri:
+    logger.info("Downloading labels CSV from storage account blob URI")
+    # storage account name wasbs://<container>@<storage_account>.blob.core.windows.net/path/to/labels.csv
+    download_blob_to_dir(
+        storage_account_blob_uri=args.labels_storage_account_blob_uri,
+        download_dir="."
+    )
+
+sensor_data_files = os.listdir(raw_data_dir)
 sensor_data_files.sort()
 sensor_data_files = pd.DataFrame(sensor_data_files, columns=["file_name"])
 sensor_data_files["pipeline_run_id"] = pipeline_run.run_id
-
 sensor_data_files["checksum"] = sensor_data_files["file_name"].apply(lambda x: hashlib.md5(x.encode()).hexdigest())
+
 
 processed_files = []
 skipped_files = []
@@ -72,17 +102,20 @@ for _, row in sensor_data_files.iterrows():
     except Exception as e:
         logger.error(f"Error saving processed file info for {row['file_name']} to database: {e}")
         raise
-
-
 logger.info(f"Saving Processed Files info to database.")
 
 
 sensor_data = process_raw_sensor_data(
-    raw_data_file_dir=args.raw_data_file_dir,
-    labels_csv_path=args.labels_csv_path,
+    raw_data_file_dir=raw_data_dir,
+    labels_csv_path=labels_csv_path,
     kaggle_csv_path=args.kaggle_csv_path,
     skipped_files=skipped_files
 )
+
+if args.raw_data_storage_account_container_uri:
+    os.removedirs(raw_data_dir)
+if args.labels_storage_account_blob_uri:
+    os.remove(labels_csv_path)
 
 try:
     logger.info(f"Saving processed sensor data to database.")
