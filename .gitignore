@@ -101,3 +101,5 @@ __pycache__/
 .env
 *.db
 mlruns/
+.vscode/launch.json
+.vscode/settings.json
