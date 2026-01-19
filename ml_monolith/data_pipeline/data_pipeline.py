@@ -6,7 +6,8 @@ import pandas as pd
 import argparse
 import hashlib
 from data_pipeline.models import PipelineRun, ProcessedFile
-from data_pipeline.database import save_to_db, initialize_tables, update_pipeline_run_status, get_postgres_db_engine
+from data_pipeline.database import save_to_db, initialize_tables, update_pipeline_run_status
+from infra.db.database_utils import get_postgres_db_engine
 from datetime import datetime
 from sqlalchemy.exc import IntegrityError
 from data_pipeline.storage_account_helpers import download_blob_to_dir

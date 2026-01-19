@@ -6,9 +6,10 @@ import logging
 import asyncio
 import subprocess
 import platform
-from data_pipeline.database import get_pipeline_run_status, get_postgres_db_engine
+from data_pipeline.database import get_pipeline_run_status
 from dataclasses import dataclass
 from data_pipeline.data_pipeline import run_data_pipeline_async
+from infra.db.database_utils import get_postgres_db_engine
 
 app = FastAPI()
 logging.basicConfig(
@@ -39,7 +40,7 @@ class WebhookPayload:
     labels_storage_account_blob_uri: str = None
     
 
-@app.post("/webhook", status_code=status.HTTP_201_CREATED)
+@app.post("/data_pipeline_webhook", status_code=status.HTTP_201_CREATED)
 async def handle_webhook(
     payload: WebhookPayload, 
     background_tasks: BackgroundTasks,
@@ -86,7 +87,7 @@ async def handle_webhook(
         return {"message": "data pipeline triggered. use the pipeline run id to track progress.", "pipeline_run_id": pipeline_run_id, "data": payload}
 
 
-@app.get("/status/{pipeline_run_id}")
+@app.get("/data_pipeline_status/{pipeline_run_id}")
 async def get_pipeline_status(pipeline_run_id: str, db=Depends(get_postgres_db_engine)):
     status_result = get_pipeline_run_status(db_engine=db, run_id=pipeline_run_id)
     if status_result == "RUN_ID_NOT_FOUND":

@@ -6,6 +6,10 @@ from sqlalchemy import create_engine, MetaData, Table, Column, inspect
 from sqlalchemy.orm import sessionmaker, Session
 import sqlite3
 from datetime import datetime
+import os
+from dotenv import load_dotenv
+
+
 
 # Abstract Base Class (Interface)
 class DatabaseEngine(ABC):
@@ -27,7 +31,7 @@ class DatabaseEngine(ABC):
         pass
     
     @abstractmethod
-    def get_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    def get_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None, columns: Optional[list] = None) -> pd.DataFrame:
         """Retrieve records from table."""
         pass
     
@@ -70,9 +74,13 @@ class SQLiteEngine(DatabaseEngine):
         inspector = inspect(self.engine)
         return table_name in inspector.get_table_names()
     
-    def get_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    def get_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None, columns: Optional[list] = None) -> pd.DataFrame:
         """Retrieve records from SQLite table."""
-        query = f"SELECT * FROM {table_name}"
+        if not columns:
+            query = f"SELECT * FROM {table_name}"
+        else:
+            cols = ", ".join(columns)
+            query = f"SELECT {cols} FROM {table_name}"
         
         if filters:
             conditions = " AND ".join([f"{k} = :{k}" for k in filters.keys()])
@@ -137,12 +145,19 @@ class PostgreSQLEngine(DatabaseEngine):
         inspector = inspect(self.engine)
         return table_name in inspector.get_table_names()
     
-    def get_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+    def get_records(self, table_name: str, filters: Optional[Dict[str, Any]] = None, columns: Optional[list] = None) -> pd.DataFrame:
         """Retrieve records from PostgreSQL table."""
-        query = f"SELECT * FROM {table_name}"
+        
+        if not columns:
+            query = f"SELECT * FROM {table_name}"
+        else:
+            # Quote column names to handle special characters like hyphens and parentheses
+            quoted_cols = ", ".join([f'"{col}"' for col in columns])
+            query = f"SELECT {quoted_cols} FROM {table_name}"
         
         if filters:
-            conditions = " AND ".join([f"{k} = %({k})s" for k in filters.keys()])
+            # Quote filter column names as well
+            conditions = " AND ".join([f'"{k}" = %({k})s' for k in filters.keys()])
             query += f" WHERE {conditions}"
         records = pd.read_sql(query, self.engine, params=filters or {})
         return records
@@ -249,3 +264,22 @@ class DatabaseRepository:
     def close(self) -> None:
         """Close database connection."""
         self.engine.close()
+        
+        
+def get_postgres_db_engine() -> DatabaseEngine:
+    load_dotenv()
+    db_type = 'postgresql'
+    db_user = os.getenv('DATABASE_USER')
+    db_password = os.getenv('DATBASE_PASSWORD')
+    db_host = os.getenv('DATBASE_URL', 'localhost')
+    db_port = os.getenv('DB_PORT', '5432')
+    db_name = os.getenv('DATABASE_NAME', 'training_data_labeled')
+    database_engine = DatabaseFactory.create_engine(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name
+    )
+    return database_engine

@@ -1,4 +1,5 @@
-from infra.db.database_utils import DatabaseEngine, DatabaseRepository, DatabaseFactory
+from requests import get
+from infra.db.database_utils import DatabaseEngine, DatabaseRepository, DatabaseFactory, get_postgres_db_engine
 import pandas as pd
 import argparse
 
@@ -6,11 +7,7 @@ argparser = argparse.ArgumentParser(description="Insert Kaggle training data int
 argparser.add_argument("--kaggle_train_data_path", type=str, required=True, help="Path to the Kaggle training data CSV file.")
 args = argparser.parse_args()
 
-database_engine = DatabaseFactory.create_engine(
-    db_type='sqlite',
-    db_path='sensor_features.db'
-)
-
+database_engine = get_postgres_db_engine()
 
 def save_kaggle_train_data_to_db(kaggle_train_data_path: str, db_engine: DatabaseEngine) -> None:
     """

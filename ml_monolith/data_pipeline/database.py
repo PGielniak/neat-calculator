@@ -8,23 +8,7 @@ from infra.db.database_utils import DatabaseEngine, DatabaseRepository, Database
 from dotenv import load_dotenv
 import os
 
-def get_postgres_db_engine() -> DatabaseEngine:
-    load_dotenv()
-    db_type = 'postgresql'
-    db_user = os.getenv('DATABASE_USER')
-    db_password = os.getenv('DATBASE_PASSWORD')
-    db_host = os.getenv('DATBASE_URL', 'localhost')
-    db_port = os.getenv('DB_PORT', '5432')
-    db_name = os.getenv('DATABASE_NAME', 'training_data_labeled')
-    database_engine = DatabaseFactory.create_engine(
-        db_type=db_type,
-        db_user=db_user,
-        db_password=db_password,
-        db_host=db_host,
-        db_port=db_port,
-        db_name=db_name
-    )
-    return database_engine
+
 
 def initialize_tables(db_engine: DatabaseEngine) -> None:
     """
