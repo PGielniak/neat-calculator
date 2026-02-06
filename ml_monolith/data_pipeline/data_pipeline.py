@@ -39,12 +39,16 @@ async def run_data_pipeline_async(pipeline_run_id: str = "",
                             raw_data_storage_account_container_uri: str = "",
                             labels_csv_path: str = "",
                             labels_storage_account_blob_uri: str = "",
-                            kaggle_csv_path: str = ""
+                            kaggle_csv_path: str = "",
+                            db_engine = None
                             
                             ):
     logger = logging.getLogger(__name__)
 
-    database_engine = get_postgres_db_engine()
+    if db_engine is None:
+        database_engine = get_postgres_db_engine()
+    else:
+        database_engine = db_engine
 
     logger.info("Initializing database tables if they do not exist.")
     initialize_tables(database_engine)

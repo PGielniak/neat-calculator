@@ -121,9 +121,13 @@ class SQLiteEngine(DatabaseEngine):
 class PostgreSQLEngine(DatabaseEngine):
     """PostgreSQL database engine implementation."""
     
-    def __init__(self, host: str, port: int, database: str, user: str, password: str):
-        connection_string = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}?sslmode=require"
-        self.engine = create_engine(connection_string)
+    def __init__(self, host: str, port: int, database: str, user: str, password: str, ssl_mode: str = 'require'):
+        connection_string = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}?sslmode={ssl_mode}"
+        self.engine = create_engine(connection_string,
+                                    pool_size=10,
+                                    max_overflow=20,
+                                    pool_timeout=30,
+                                    pool_recycle=1800)
         self.Session = sessionmaker(bind=self.engine)
     
     def save_dataframe(self, df: pd.DataFrame, table_name: str, if_exists: str = 'append') -> None:
@@ -216,7 +220,8 @@ class DatabaseFactory:
                 port=config.get('db_port', 5432),
                 database=config.get('db_name', 'sensor_data'),
                 user=config.get('db_user', 'postgres'),
-                password=config.get('db_password', '')
+                password=config.get('db_password', ''),
+                ssl_mode=config.get('ssl_mode', 'require')
             )
         
         else:
@@ -270,16 +275,18 @@ def get_postgres_db_engine() -> DatabaseEngine:
     load_dotenv()
     db_type = 'postgresql'
     db_user = os.getenv('DATABASE_USER')
-    db_password = os.getenv('DATBASE_PASSWORD')
-    db_host = os.getenv('DATBASE_URL', 'localhost')
+    db_password = os.getenv('DATABASE_PASSWORD')
+    db_host = os.getenv('DATABASE_URL', 'localhost')
     db_port = os.getenv('DB_PORT', '5432')
     db_name = os.getenv('DATABASE_NAME', 'training_data_labeled')
+    ssl_mode = os.getenv('DB_SSL_MODE', 'require')
     database_engine = DatabaseFactory.create_engine(
         db_type=db_type,
         db_user=db_user,
         db_password=db_password,
         db_host=db_host,
         db_port=db_port,
-        db_name=db_name
+        db_name=db_name,
+        ssl_mode=ssl_mode
     )
     return database_engine

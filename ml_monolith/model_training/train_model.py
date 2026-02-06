@@ -37,25 +37,26 @@ async def prepare_variables():
 async def setup_and_test_mlflow_connection(backend_store_uri: str):
     # Set tracking URI
     mlflow.set_tracking_uri(backend_store_uri)
+    logger.info(f"MLflow Tracking URI set to: {mlflow.get_tracking_uri()}")
     # Test connection
     try:
         mlflow.search_experiments()
-        print("✓ Successfully connected to MLflow backend")
+        logger.info("✓ Successfully connected to MLflow backend")
     except Exception as e:
-        print(f"✗ Connection failed: {e}")
-        print("Falling back to local SQLite")
+        logger.error(f"✗ Connection failed: {e}")
+        logger.info("Falling back to local SQLite")
         
 async def load_data_fromdb(database_engine) -> pd.DataFrame:
     data = database_engine.get_records(table_name="training_data_labeled")
-    print(f"Loaded {len(data)} rows from database")
-    print(f"Total columns: {len(data.columns)}")
+    logger.info(f"Loaded {len(data)} rows from database")
+    logger.info(f"Total columns: {len(data.columns)}")
     
     return data
 
 async def prepare_data_for_training(X: pd.DataFrame, y: pd.Series):
-    print(f"\nFeature count: {X.shape[1]}")
-    print(f"Classes: {y.unique()}")
-    print(f"Class distribution:\n{y.value_counts()}")
+    logger.info(f"\nFeature count: {X.shape[1]}")
+    logger.info(f"Classes: {y.unique()}")
+    logger.info(f"Class distribution:\n{y.value_counts()}")
 
     # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
@@ -82,24 +83,24 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame):
     X_train, X_test, y_train_encoded, y_test_encoded, label_encoder = await prepare_data_for_training(X, y)
     # Set experiment with artifact location
     experiment = mlflow.set_experiment("Merito_HAR_Production_Models")
-    print(f"Experiment artifact location: {experiment.artifact_location}")
+    logger.info(f"Experiment artifact location: {experiment.artifact_location}")
 
     # If experiment artifact location is local, we need to create a new experiment or update it
     if not experiment.artifact_location.startswith(('wasbs://', 'wasb://', 's3://', 'gs://')):
-        print(f"⚠️  Experiment is using local storage: {experiment.artifact_location}")
-        print("Creating a new experiment with Azure Blob Storage...")
+        logger.warning(f"⚠️  Experiment is using local storage: {experiment.artifact_location}")
+        logger.info("Creating a new experiment with Azure Blob Storage...")
         
         # Create a new experiment with the correct artifact location
         try:
             experiment_id = mlflow.create_experiment(
-                "HAR_Production_Models4",
+                "HAR_Production_Models",
                 artifact_location=artifact_uri
             )
-            mlflow.set_experiment("HAR_Production_Models4")
+            mlflow.set_experiment("HAR_Production_Models")
             print(f"✓ Created new experiment with artifact location: {artifact_uri}")
         except:
             # If experiment already exists, just set it
-            mlflow.set_experiment("HAR_Production_Models4")
+            mlflow.set_experiment("HAR_Production_Models")
     with mlflow.start_run(run_name="XGBoost_180_features") as run:
         # Train model
         model = xgb.XGBClassifier(

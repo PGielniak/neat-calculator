@@ -37,8 +37,20 @@ def download_blob_to_dir(storage_account_blob_uri: str, download_dir: str, logge
     logger.debug(f"Storage Account: {ACCOUNT_NAME}, Container: {CONTAINER}, Blob Path: {BLOB_PATH}")
     
     account_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net"
-    credential = DefaultAzureCredential()
-    blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
+    
+    connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if connection_string:
+        logger.info("Using AZURE_STORAGE_CONNECTION_STRING for authentication.")
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str=connection_string)
+    else:
+        try:
+            logger.info("Using DefaultAzureCredential for authentication.")
+            credential = DefaultAzureCredential()
+            blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
+        except Exception as e:
+            logger.error(f"Failed to authenticate with DefaultAzureCredential: {e}")
+            raise e
+    
     container_client = blob_service_client.get_container_client(CONTAINER)
     
     logger.info(f"Listing blobs with prefix: {BLOB_PATH}")
