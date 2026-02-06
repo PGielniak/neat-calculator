@@ -1,13 +1,13 @@
 from .video_with_overlay import overlay_timestamp_on_video
 import os
-list_of_files = os.listdir('data_collection\\recordings\\videos\\SensorRecording')
+list_of_files = os.listdir('E:\\src\\neat-calculator\\data_collection\\recordings\\videos\\SensorRecording\\26012026')
 list_of_files.sort()
 
 
 for file_name in list_of_files:
     print(f"Processing file: {file_name}")
-    input_video_path = f"data_collection\\recordings\\videos\\SensorRecording\\{file_name}"
-    output_video_path = f"data_collection\\recordings\\videos\\SensorRecording_Timestamped\\{file_name}"
+    input_video_path = f"E:\\src\\neat-calculator\\data_collection\\recordings\\videos\\SensorRecording\\26012026\\{file_name}"
+    output_video_path = f"E:\\src\\neat-calculator\\data_collection\\recordings\\videos\\SensorRecording_Timestamped\\26012026\\{file_name}"
     print(len(file_name.split('_')))
     if len(file_name.split('_')) < 2:
         print(f"Not a segment file, starting timestamp from the file name and saving the end timestamp")
