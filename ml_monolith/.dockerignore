@@ -1,0 +1,27 @@
+# Version control
+.git
+.gitignore
+
+# Python virtual environment (CRITICAL for build speed)
+.venv
+venv
+ENV
+
+# Bytecode
+__pycache__
+*.pyc
+
+# Data and Artifacts (Should be volume mounted, not baked in)
+mlruns/
+*.json
+*.zip
+*.tar.gz
+
+# Notebooks and research code
+*.ipynb
+.ipynb_checkpoints
+data_preprocessing/
+deploy_locally.md
+
+# OS specific
+.DS_Store

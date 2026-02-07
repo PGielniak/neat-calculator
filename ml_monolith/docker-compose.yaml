@@ -5,7 +5,7 @@ services:
       - bash
       - -c
       - |
-        pip install mlflow psycopg2-binary azure-storage-blob azure-identity && \
+        pip install mlflow==3.9.0 psycopg2-binary azure-storage-blob azure-identity && \
         mlflow server \
         --backend-store-uri postgresql://${DATABASE_USER}:${DATABASE_PASSWORD}@${DATABASE_URL}:${DB_PORT}/${DATABASE_NAME} \
         --default-artifact-root wasbs://${AZURE_STORAGE_CONTAINER}@${AZURE_STORAGE_ACCOUNT}.blob.core.windows.net/mlflow-artifacts \
@@ -24,7 +24,8 @@ services:
     restart: unless-stopped
 
   data-pipeline-webhook:
-    image: ml-monolith:latest
+    build: .
+    image: ml_monolith:latest
     command: uvicorn data_pipeline.webhook:app --host 0.0.0.0 --port 8000 --log-level info
     env_file:
       - .env
@@ -35,7 +36,8 @@ services:
       - mlflow
 
   model-training-webhook:
-    image: ml-monolith:latest
+    build: .
+    image: ml_monolith:latest
     command: uvicorn model_training.webhook:app --host 0.0.0.0 --port 8001 --log-level info
     env_file:
       - .env

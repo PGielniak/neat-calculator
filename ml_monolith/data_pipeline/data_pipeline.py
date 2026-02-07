@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from data_pipeline.storage_account_helpers import download_blob_to_dir
 import asyncio
 
+
 from data_pipeline.process_raw_data import process_raw_sensor_data
 
 if __name__ == "__main__":
@@ -87,7 +88,7 @@ async def run_data_pipeline_async(pipeline_run_id: str = "",
         logger.error("Either --labels_csv_path or --labels_storage_account_blob_uri must be provided.")
         raise ValueError("Either --labels_csv_path or --labels_storage_account_blob_uri must be provided.")
 
-    labels_csv_path = labels_csv_path if labels_csv_path else "labels.csv"
+    labels_csv_path = labels_csv_path if labels_csv_path else None
     if labels_storage_account_blob_uri:
         logger.info("Downloading labels CSV from storage account blob URI")
         # storage account name wasbs://<container>@<storage_account>.blob.core.windows.net/path/to/labels.csv
@@ -96,6 +97,7 @@ async def run_data_pipeline_async(pipeline_run_id: str = "",
             download_dir=".",
             logger=logger
         )
+        labels_csv_path = os.path.join(".", os.path.basename(labels_storage_account_blob_uri))
 
     sensor_data_files = os.listdir(raw_data_dir)
     sensor_data_files.sort()
@@ -144,10 +146,10 @@ async def run_data_pipeline_async(pipeline_run_id: str = "",
         update_pipeline_run_status(database_engine, run_id=pipeline_run.run_id, status=pipeline_run.status, completed_at=pipeline_run.completed_at)
         raise e
 
-    if raw_data_storage_account_container_uri:
-        shutil.rmtree(raw_data_dir, ignore_errors=True)
-    if labels_storage_account_blob_uri:
-        os.remove(labels_csv_path)
+    # if raw_data_storage_account_container_uri:
+    #     shutil.rmtree(raw_data_dir, ignore_errors=True)
+    # if labels_storage_account_blob_uri:
+    #     os.remove(labels_csv_path)
 
     try:
         logger.info(f"Saving processed sensor data to database.")

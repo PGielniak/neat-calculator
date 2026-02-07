@@ -7,6 +7,7 @@ from pydantic import BaseModel, ValidationError
 from typing import List, Dict, Any, Tuple
 import logging
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 from data_pipeline.helper_functions import extract_features
 
 
@@ -69,7 +70,24 @@ def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str, skippe
     del renamed_features  # free up memory
     
     feature_df = pd.DataFrame(intersect_with_kaggle)
-    return feature_df
+
+    # CRITICAL FIX: Do NOT scale features dynamically on prediction batches.
+    # Scaling on a small batch (e.g., just "Sitting") amplifies noise (0.01g) to full range (-1 to 1),
+    # causing the model to see "Running" signals.
+    # The physical features (in Gs) from extract_features are already close enough to the [-1, 1] expected range.
+    
+    # cols_to_scale = feature_df.select_dtypes(include=[np.number]).columns.tolist()
+    # exclude_cols = ['Activity', 'label', 'Subject', 'subject', 'timestamp']
+    # cols_to_scale = [c for c in cols_to_scale if c not in exclude_cols]
+    
+    # if cols_to_scale:
+    #     scaler = MinMaxScaler(feature_range=(-1, 1))
+    #     feature_df[cols_to_scale] = scaler.fit_transform(feature_df[cols_to_scale])
+
+    cleaned_df = validate_labels_csv(feature_df, label_column="Activity")
+    
+    logger.info(cleaned_df.describe())
+    return cleaned_df
 
 def validate_directory(directory: str, skipped_files: list[str]=[]) -> None:
     logger.info(f"Validating directory: {directory}")
@@ -131,6 +149,23 @@ def validate_directory(directory: str, skipped_files: list[str]=[]) -> None:
                     raise ValueError(f"Validation error in file {file_name}: {e}")
         
     logger.info(f"All files in directory {directory} are valid.")
+    
+def validate_labels_csv(dataframe: pd.DataFrame, label_column="Activity") -> pd.DataFrame:
+    logger.info(f"Validating labels CSV for column: {label_column}")
+    if label_column not in dataframe.columns:
+        logger.error(f"Label column '{label_column}' not found in DataFrame.")
+        raise ValueError(f"Label column '{label_column}' not found in DataFrame.")
+    
+    legal_labels = set(["STANDING", "SITTING", "LAYING", "WALKING", "WALKING_DOWNSTAIRS", "WALKING_UPSTAIRS"])
+    
+    if not dataframe[label_column].isin(legal_labels).all():
+        invalid_labels = dataframe[~dataframe[label_column].isin(legal_labels)][label_column].unique()
+        logger.error(f"Invalid labels found in '{label_column}': {invalid_labels}")
+        # remove records with invalid labels
+        dataframe = dataframe[dataframe[label_column].isin(legal_labels)]
+        logger.info(f"Removed records with invalid labels. Remaining records: {len(dataframe)}")
+                    
+    return dataframe
 
 def merge_json_files(directory: str, skipped_files: list[str]=[]) -> list[SensorRecording]:
     
@@ -178,7 +213,38 @@ def label_data(data: list[SensorRecording], labels_csv_path: str) -> pd.DataFram
     
 def remove_duplicates(data_df: pd.DataFrame, sensor_cols: list[str]) -> pd.DataFrame:
     logger.info("Removing duplicate timestamps and aggregating sensor data.")
+    
+    # Fix for relative timestampNanos (system uptime) vs absolute timestamp (wall clock)
+    # If timestampNanos values are small (e.g. < 2017 which is ~1.5e18 ns), assume they are not epoch time.
+    # In that case, use 'timestamp' (milliseconds) to overwrite timestampNanos.
+    if data_df["timestampNanos"].min() < 1.5e18:
+        logger.warning("timestampNanos seems to be relative/uptime (< 2017). Using 'timestamp' * 1,000,000 instead.")
+        data_df["timestampNanos"] = data_df["timestamp"] * 1_000_000
+    
+    # 1. Cleaning Step: Remove invalid or outlier timestamps
+    # Assuming timestampNanos is epoch nanoseconds. Year 2020 is approx 1.57e18 ns.
+    # If we have 0 or very small numbers, it causes huge memory usage during resampling (filling years of zeros).
+    valid_ts_mask = data_df["timestampNanos"] > 1.5e18  # > Year 2017
+    if not valid_ts_mask.all():
+        invalid_count = (~valid_ts_mask).sum()
+        logger.warning(f"Found {invalid_count} rows with invalid/old timestamps (< 2017). Dropping them to prevent memory crash.")
+        data_df = data_df[valid_ts_mask].copy()
+
+    if data_df.empty:
+        logger.error("No valid data left after timestamp cleaning!")
+        return data_df
+
     data_df = data_df.sort_values("timestampNanos")
+    
+    # Check time span to prevent OOM
+    min_ts = data_df["timestampNanos"].min()
+    max_ts = data_df["timestampNanos"].max()
+    span_seconds = (max_ts - min_ts) / 1e9
+    logger.info(f"Data time span: {span_seconds:.2f} seconds ({span_seconds/3600:.2f} hours)")
+    
+    if span_seconds > (24 * 3600): # > 24 hours
+        logger.warning(f"⚠️ Data spans longer than 24 hours! This might cause high memory usage or crashes during resampling.")
+    
     data_df["ts"] = data_df["timestampNanos"] / 1e9
     data_df["dt"] = data_df["ts"].diff()
         
@@ -193,7 +259,8 @@ def remove_duplicates(data_df: pd.DataFrame, sensor_cols: list[str]) -> pd.DataF
         .agg(agg_dict)
     )
     # we grouped the data by timestampNanos and averaged the sensor readings for duplicate timestamps, while keeping the first label.
-    data_df["t"] = pd.to_timedelta(data_df["timestampNanos"], unit="ns") # we convert nanoseconds to a timedelta object (pandas Timedelta) because it's easier to work with time intervals
+    # Convert to datetime (Epoch) instead of Timedelta to preserve absolute time
+    data_df["t"] = pd.to_datetime(data_df["timestampNanos"], unit="ns")
     data_df = data_df.set_index("t") # set the time column as the index of the dataframe for easier time-based slicing and analysis
     data_df = data_df.sort_index() # ensure the data is sorted by time index
     logger.info("Duplicates removed and data aggregated.")

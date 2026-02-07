@@ -9,9 +9,12 @@ from pathlib import Path
 import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.metrics import classification_report, confusion_matrix
-import mlflow
+import joblib
+import tempfile
+import shutil
+import os
 import mlflow.xgboost
 import logging
 from infra.db.database_utils import DatabaseEngine, get_postgres_db_engine
@@ -73,7 +76,7 @@ async def prepare_data_for_training(X: pd.DataFrame, y: pd.Series):
     
     return X_train, X_test, y_train_encoded, y_test_encoded, label_encoder
 
-async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame):
+async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_path: str = None):
     
     # Train XGBoost and register with MLflow
     print(f"Using artifact URI: {artifact_uri}")
@@ -102,6 +105,10 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame):
             # If experiment already exists, just set it
             mlflow.set_experiment("HAR_Production_Models")
     with mlflow.start_run(run_name="XGBoost_180_features") as run:
+        # Log scaler if provided
+        if scaler_path and os.path.exists(scaler_path):
+            mlflow.log_artifact(scaler_path)
+
         # Train model
         model = xgb.XGBClassifier(
             eval_metric='mlogloss',
@@ -151,17 +158,65 @@ async def load_kaggle_data_fromdb(database_engine: DatabaseEngine, columns: list
     
     return data
 
+async def balance_classes(data: pd.DataFrame) -> pd.DataFrame:
+    logger.info("Balancing classes by undersampling the majority class...")
+    class_counts = data["Activity"].value_counts()
+    logger.info(f"Original class distribution:\n{class_counts}")
+    
+    # Undersample the majority class (e.g., 'STANDING')
+    majority_class = class_counts.idxmax()
+    minority_classes = class_counts[class_counts.index != majority_class].index
+    
+    # Keep all minority class samples and undersample the majority class
+    balanced_data = pd.concat([
+        data[data["Activity"] == cls] for cls in minority_classes
+    ] + [data[data["Activity"] == majority_class].sample(n=class_counts[minority_classes].max(), random_state=42)])
+    
+    balanced_class_counts = balanced_data["Activity"].value_counts()
+    logger.info(f"Balanced class distribution:\n{balanced_class_counts}")
+    
+    return balanced_data
+
 async def train_model_async(db_engine: DatabaseEngine):
     backend_store_uri, artifact_uri = await prepare_variables()
     await setup_and_test_mlflow_connection(backend_store_uri)
     data = await load_data_fromdb(db_engine)
+    balanced_data = await balance_classes(data)
+    # Scale user data to match Kaggle range [-1, 1]
+    logger.info("Scaling user data to [-1, 1] range to match Kaggle distribution...")
     
-    columns = list(data.columns.drop(["timestamp"]))
-    kaggle_data = await load_kaggle_data_fromdb(db_engine, columns)
+    # Create a temporary directory for artifacts
+    temp_dir = tempfile.mkdtemp()
+    scaler_path = os.path.join(temp_dir, "scaler.pkl")
     
-    combined_data = pd.concat([data, kaggle_data], ignore_index=True)
+    try:
+        numeric_cols = balanced_data.select_dtypes(include=['number']).columns
+        # cols_to_exclude = ['timestamp', 'Activity', 'label', 'subject']
+        # flexible exclusion
+        cols_to_scale = [c for c in numeric_cols if c not in ['timestamp', 'Activity', 'label', 'subject', 'Subject']]
+        
+        scaler = MinMaxScaler(feature_range=(-1, 1))
+        balanced_data[cols_to_scale] = scaler.fit_transform(balanced_data[cols_to_scale])
+        
+        # Save scaler to temp file
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"Scaler temporarily saved to {scaler_path}")
+    except Exception as e:
+        logger.error(f"Scaling failed: {e}")
+        shutil.rmtree(temp_dir)
+        raise e
+
+    columns = list(balanced_data.columns.drop(["timestamp"]))
+    # kaggle_data = await load_kaggle_data_fromdb(db_engine, columns)
+    
+    combined_data = balanced_data  # pd.concat([data, kaggle_data], ignore_index=True)
     print(f"Combined data shape: {combined_data.shape}")
-    await run_ml_flow_experiment(artifact_uri, combined_data)
+    
+    try:
+        await run_ml_flow_experiment(artifact_uri, combined_data, scaler_path=scaler_path)
+    finally:
+        # Cleanup temp dir
+        shutil.rmtree(temp_dir)
 
 
 
