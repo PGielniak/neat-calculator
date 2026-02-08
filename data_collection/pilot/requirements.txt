@@ -1,4 +1,2 @@
 flask
-azure-storage-blob
-python-dotenv
 flask-cors

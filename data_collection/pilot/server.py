@@ -1,22 +1,17 @@
 import os
 import uuid
 from flask import Flask, request, jsonify, send_from_directory
-from azure.storage.blob import BlobServiceClient
-from dotenv import load_dotenv
 from flask_cors import CORS
-
-# Load environment variables from .env file
-load_dotenv()
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # Configuration
-CONN_STR = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-CONTAINER_NAME = "pilot-data"
+DATA_DIR = "/mnt/pilot-app"  # Docker volume mount point
 
-if not CONN_STR:
-    print("WARNING: AZURE_STORAGE_CONNECTION_STRING not found in .env file")
+# Ensure data directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
 
 @app.route('/')
 def index():
@@ -40,28 +35,24 @@ def upload():
             end_ts = int(round(row['end']))
             csv_content += f"{row['label']},{start_ts},{end_ts}\n"
 
-        # Unique filename
-        filename = f"activity_session_{uuid.uuid4()}.csv"
-
-        # Upload to Azure
-        blob_service_client = BlobServiceClient.from_connection_string(CONN_STR)
-        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"activity_session_{timestamp}_{uuid.uuid4().hex[:8]}.csv"
         
-        # Create container if it doesn't exist
-        if not container_client.exists():
-            container_client.create_container()
+        # Save to local filesystem
+        filepath = os.path.join(DATA_DIR, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(csv_content)
 
-        blob_client = container_client.get_blob_client(filename)
-        blob_client.upload_blob(csv_content)
-
-        print(f"Uploaded {filename} with {len(rows)} rows.")
+        print(f"Saved {filename} with {len(rows)} rows to {filepath}")
         return jsonify({"status": "success", "filename": filename})
 
     except Exception as e:
-        print(f"Error uploading: {str(e)}")
+        print(f"Error saving file: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    # Run on 0.0.0.0 to be accessible from iPhone on the same network
-    print("Starting server at http://0.0.0.0:8000")
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # Run on 0.0.0.0 to be accessible from external devices
+    print(f"Starting server at http://0.0.0.0:8003")
+    print(f"Data will be saved to: {DATA_DIR}")
+    app.run(host='0.0.0.0', port=8003, debug=True)

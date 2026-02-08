@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  pilot-app:
+    build: .
+    ports:
+      - "8003:8003"
+    volumes:
+      - pilot-data:/mnt/pilot-app
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+    container_name: pilot-data-collector
+
+volumes:
+  pilot-data:
+    driver: local
