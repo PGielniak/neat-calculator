@@ -20,23 +20,39 @@ def energy(sig):
     return np.sum(sig**2) / len(sig)
 
 def entropy(sig, bins=10):
-    """Calculate entropy with safeguards against extreme values"""
+    """Calculate entropy with comprehensive safeguards against edge cases"""
     sig = np.asarray(sig)
     if len(sig) == 0 or np.std(sig) == 0:
         return 0.0
     
-    hist, _ = np.histogram(sig, bins=bins, density=False)
-    # Normalize to get probabilities
-    hist = hist / hist.sum()
-    # Filter out zeros and add small epsilon to prevent log(0)
-    hist = hist[hist > 0]
-    
-    if len(hist) == 0:
+    # Check if the range is too small for the number of bins
+    data_range = np.max(sig) - np.min(sig)
+    if data_range < 1e-10:  # Very small range, essentially constant
         return 0.0
     
-    # Clip entropy to reasonable range to prevent extreme values
-    ent = -np.sum(hist * np.log2(hist + 1e-10))
-    return np.clip(ent, 0, 10)  # entropy shouldn't exceed ~10 for 10 bins
+    try:
+        hist, _ = np.histogram(sig, bins=bins, density=False)
+        # Normalize to get probabilities
+        hist = hist / hist.sum()
+        # Remove zeros to avoid log(0)
+        hist = hist[hist > 0]
+        
+        if len(hist) == 0:
+            return 0.0
+        
+        # Calculate entropy and clip to reasonable range
+        ent = -np.sum(hist * np.log2(hist))
+        return np.clip(ent, 0, 10)  # entropy shouldn't exceed ~10 for 10 bins
+        
+    except ValueError as e:
+        if "Too many bins for data range" in str(e):
+            # Reduce number of bins and retry
+            reduced_bins = min(bins, max(2, int(len(np.unique(sig)))))
+            if reduced_bins < 2:
+                return 0.0
+            return entropy(sig, bins=reduced_bins)
+        else:
+            raise e
 
 def sma(x, y, z):
     x, y, z = map(np.asarray, (x, y, z))

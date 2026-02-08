@@ -41,7 +41,8 @@ async def run_data_pipeline_async(pipeline_run_id: str = "",
                             labels_csv_path: str = "",
                             labels_storage_account_blob_uri: str = "",
                             kaggle_csv_path: str = "",
-                            db_engine = None
+                            db_engine = None,
+                            use_v2_features: bool = False
                             
                             ):
     logger = logging.getLogger(__name__)
@@ -133,11 +134,13 @@ async def run_data_pipeline_async(pipeline_run_id: str = "",
     logger.info(f"Saving Processed Files info to database.")
 
     try:
+        data_pipeline_version = "2" if use_v2_features else "1"
         sensor_data = process_raw_sensor_data(
             raw_data_file_dir=raw_data_dir,
             labels_csv_path=labels_csv_path,
             kaggle_csv_path=kaggle_csv_path,
-            skipped_files=skipped_files
+            skipped_files=skipped_files,
+            version = data_pipeline_version
         )
     except Exception as e:
         logger.error(f"Error processing raw sensor data: {e}")

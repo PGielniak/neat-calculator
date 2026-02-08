@@ -1,3 +1,5 @@
+# this is deprecated and works only for data imports before 08 02 2026 with the old way of recording. For new data imports, use labelerv2.py instead.
+
 import hashlib
 import uuid
 import pandas as pd
@@ -38,7 +40,8 @@ sensor_cols = [
     "gyroscopeX","gyroscopeY","gyroscopeZ",
     ]
 
-def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str, skipped_files: List[str]=[], labels_csv_path = None) -> pd.DataFrame:
+
+def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str, skipped_files: List[str]=[], labels_csv_path = None, version: str = '2') -> pd.DataFrame:
     """
     Process raw sensor data files from the specified directory and return a DataFrame
     containing the extracted features and labels.
@@ -48,12 +51,17 @@ def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str, skippe
     logger.info(f"Starting processing of raw data in directory: {raw_data_file_dir}")
     logger.info(f"Using labels from: {labels_csv_path}")
 
-    
     merged_data = merge_json_files(raw_data_file_dir, skipped_files=skipped_files)
+    
+    
     if labels_csv_path is None:
         logger.warning("No labels CSV path provided. Proceeding without labeling.")
         labels_csv_path = ""
-    labeled_data = label_data(merged_data, labels_csv_path=labels_csv_path)
+    if version == '2':
+        logger.info("Using label_data_v2 for labeling.")
+        labeled_data = label_data_v2(merged_data, labels_csv_path=labels_csv_path)
+    else:    
+        labeled_data = label_data(merged_data, labels_csv_path=labels_csv_path)
     del merged_data  # free up memory
     deduped_data = remove_duplicates(labeled_data,sensor_cols=sensor_cols)
     del labeled_data  # free up memory
@@ -190,6 +198,76 @@ def merge_json_files(directory: str, skipped_files: list[str]=[]) -> list[Sensor
             merged_data.extend(data)
 
     return merged_data
+
+def label_data_v2(data: list[SensorRecording], labels_csv_path: str) -> pd.DataFrame:
+    sensor_data_df = pd.DataFrame(data)
+    sensor_data_df.sort_values(by=['timestamp'], inplace=True)
+    
+    labels_df = pd.read_csv(labels_csv_path)
+    
+    sensor_data_df['label'] = None
+
+    logger.info(f"Total sensor data points: {len(sensor_data_df)}")
+    logger.info(f"Timestamp range: {sensor_data_df['timestamp'].min()} to {sensor_data_df['timestamp'].max()}")
+    logger.info(f"Processing {len(labels_df)} labels...")
+
+    for index, row in labels_df.iterrows():
+        # Calculate buffered timestamps (5 seconds = 5000ms)
+        start_timestamp = row['StartTimestamp_Unix_Ms'] + 5000
+        end_timestamp = row['EndTimestamp_Unix_Ms'] - 5000
+        
+        logger.info(f"\nLabel {index+1}: {row['Label']}")
+        logger.info(f"  Original range: {row['StartTimestamp_Unix_Ms']} to {row['EndTimestamp_Unix_Ms']}")
+        logger.info(f"  Buffered range: {start_timestamp} to {end_timestamp}")
+        
+        # Use boolean indexing to update only matching rows
+        mask = (sensor_data_df['timestamp'] >= start_timestamp) & (sensor_data_df['timestamp'] <= end_timestamp)
+        matching_rows = mask.sum()
+        
+        if matching_rows > 0:
+            sensor_data_df.loc[mask, 'label'] = row['Label']
+            logger.info(f"  ✓ Labeled {matching_rows} sensor data points")
+        else:
+            logger.info(f"  ⚠ No matching sensor data found!")
+
+    logger.info(f"\nLabeling complete!")
+    sensor_data_df.info()
+    
+    logger.info("Activity distribution:")
+    activity_counts = sensor_data_df['label'].value_counts(dropna=False)
+    logger.info(activity_counts)
+
+    logger.info(f"\nLabeling coverage:")
+    labeled_count = sensor_data_df['label'].notna().sum()
+    total_count = len(sensor_data_df)
+    coverage_pct = (labeled_count / total_count) * 100
+
+    logger.info(f"Labeled samples: {labeled_count:,}")
+    logger.info(f"Total samples: {total_count:,}")
+    logger.info(f"Coverage: {coverage_pct:.1f}%")
+
+    # Show sample of labeled data
+    logger.info(f"\nSample of labeled data:")
+    labeled_sample = sensor_data_df[sensor_data_df['label'].notna()].head(10)
+    logger.info(labeled_sample[['timestamp', 'label', 'accelerometerX', 'accelerometerY', 'accelerometerZ']])
+    logger.info("Columns returned by label_data_v2")
+    logger.info(sensor_data_df.columns)
+    
+    clean_data = sensor_data_df.copy()
+    clean_data.dropna(subset=['label'], inplace=True)
+    
+    labels_mapping = {
+    'Walking': 'WALKING',
+    'Stairs Down': 'WALKING_DOWNSTAIRS',
+    'Sitting': 'SITTING',
+    'Standing': 'STANDING',
+    'Lying': 'LAYING',
+    'Stairs Up': 'WALKING_UPSTAIRS'
+    }
+    
+    clean_data['label'] = clean_data['label'].map(labels_mapping)
+    
+    return clean_data
 
 def label_data(data: list[SensorRecording], labels_csv_path: str) -> pd.DataFrame:
     

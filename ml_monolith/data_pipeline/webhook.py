@@ -57,11 +57,23 @@ class WebhookPayload:
     raw_data_storage_account_container_uri: str = None
     labels_csv_path: str = None
     labels_storage_account_blob_uri: str = None
+    use_v2_features: bool = False  # New parameter for v2
     
 
 
 def run_pipeline_sync(*args, **kwargs):
     asyncio.run(run_data_pipeline_async(*args, **kwargs))
+    
+@app.post("/data_pipeline_webhook2", status_code=status.HTTP_201_CREATED)
+async def handle_webhook_v2(
+    payload: WebhookPayload,
+    db = Depends(get_db_engine),
+    debug: bool = Query(False, description="Run pipeline synchronously for debugging")
+):
+    # V2 automatically enables new features
+    payload.use_v2_features = True
+    return await handle_webhook(payload, db, debug)
+
 
 @app.post("/data_pipeline_webhook", status_code=status.HTTP_201_CREATED)
 async def handle_webhook(
@@ -87,7 +99,8 @@ async def handle_webhook(
                 labels_csv_path=labels_csv_path,
                 labels_storage_account_blob_uri=labels_storage_account_blob_uri,
                 kaggle_csv_path=kaggle_csv_path,
-                db_engine=db
+                db_engine=db,
+                use_v2_features=payload.use_v2_features
             )
             return {"message": "data pipeline completed (debug mode).", "pipeline_run_id": pipeline_run_id, "data": payload}
         except Exception as e:
@@ -104,13 +117,14 @@ async def handle_webhook(
             labels_csv_path,
             labels_storage_account_blob_uri,
             kaggle_csv_path,
-            db
+            db,
+            payload.use_v2_features  # Pass new parameter
         )
         logger.info(f"Scheduled data pipeline run: {pipeline_run_id}")
         return {"message": "data pipeline triggered. use the pipeline run id to track progress.", "pipeline_run_id": pipeline_run_id, "data": payload}
 
 
-@app.get("/data_pipeline_status/{pipeline_run_id}")
+@app.get("/v2/data_pipeline_status/{pipeline_run_id}")
 async def get_pipeline_status(pipeline_run_id: str, db=Depends(get_db_engine)):
     status_result = get_pipeline_run_status(db_engine=db, run_id=pipeline_run_id)
     if status_result == "RUN_ID_NOT_FOUND":
