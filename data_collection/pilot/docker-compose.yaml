@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   pilot-app:
-    build: .
+    image: patryklinuksiarz/neat-calculator-ml:latest
     ports:
       - "8003:8003"
     volumes:
