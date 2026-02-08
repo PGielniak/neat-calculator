@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Collection Pilot</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; text-align: center; }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; box-sizing: border-box; }
+        button { padding: 15px; font-size: 16px; cursor: pointer; border-radius: 8px; border: 1px solid #ccc; background: #f0f0f0; width: 100%; box-sizing: border-box; }
+        button:active { background: #ddd; }
+        button.active { background: #4CAF50; color: white; border-color: #45a049; }
+        
+        /* Disabled state styling */
+        button:disabled { background: #e0e0e0; color: #a0a0a0; border-color: #d0d0d0; cursor: not-allowed; }
+        button.active:disabled { background: #81c784; color: #e8f5e9; border-color: #81c784; opacity: 0.7; }
+
+        #stopButton { grid-column: 1 / -1; background: #ffcccc; border-color: #ffaaaa; margin-top: 10px; }
+        #stopButton:active { background: #ffaaaa; }
+        #stopButton:disabled { background: #f9e0e0; border-color: #f0d0d0; color: #ccaaaa; }
+
+        #status { margin: 20px 0; font-weight: bold; min-height: 1.2em; color: #555; }
+        #log { margin-top: 20px; text-align: left; background: #f9f9f9; padding: 10px; border: 1px solid #ddd; max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        .download-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; }
+        .download-btn { background: #008CBA; color: white; border: none; }
+        .download-btn:hover { background: #007B9E; }
+        .download-btn:disabled { background: #a0c4d1; }
+    </style>
+</head>
+<body>
+
+    <h1>Activity Labeler</h1>
+    
+    <div id="status">Initializing...</div>
+
+    <div class="controls">
+        <!-- Labels matching typical activity recognition sets -->
+        <button class="activity-btn" onclick="startActivity('Walking')">Walking</button>
+        <button class="activity-btn" onclick="startActivity('Standing')">Standing</button>
+        <button class="activity-btn" onclick="startActivity('Sitting')">Sitting</button>
+        <button class="activity-btn" onclick="startActivity('Stairs Up')">Stairs Up</button>
+        <button class="activity-btn" onclick="startActivity('Stairs Down')">Stairs Down</button>
+        <button class="activity-btn" onclick="startActivity('Laying')">Laying</button>
+        
+        <button id="stopButton" onclick="stopActivity()">PAUSE / STOP</button>
+    </div>
+
+    <div class="download-section">
+        <button id="saveBtn" class="download-btn" onclick="saveData()">Save to Cloud</button>
+    </div>
+
+    <pre id="log"></pre>
+
+    <script>
+        // State
+        let currentLabel = null;
+        let startTimestamp = null;
+        let timeOffset = 0; // Difference between server time and local time
+        let logs = []; // Array to store CSV rows: "Label,StartTimestamp,EndTimestamp"
+        let isSynced = false;
+
+        // UI References
+        const statusDiv = document.getElementById('status');
+        const logDiv = document.getElementById('log');
+        const activityButtons = document.querySelectorAll('.activity-btn');
+        const stopButton = document.getElementById('stopButton');
+        const saveButton = document.getElementById('saveBtn');
+
+        // Initial State: Disable everything
+        toggleAllButtons(false);
+        if(saveButton) saveButton.disabled = true;
+
+        // Initialize Time Sync
+        async function syncTime() {
+            // Disable controls while syncing
+            toggleAllButtons(false);
+            statusDiv.textContent = "Syncing with time server...";
+            statusDiv.style.color = "#555";
+
+            const providers = [
+                {
+                    name: "TimeAPI.io",
+                    url: "https://timeapi.io/api/Time/current/zone?timeZone=UTC",
+                    handler: async (response) => {
+                        const data = await response.json();
+                        // dateTime format: "2023-10-25T14:18:22.1234567" (No Z, looks like local time of the requested zone)
+                        // Since we requested UTC, we can append 'Z' to treat it as ISO UTC
+                        return new Date(data.dateTime + 'Z').getTime();
+                    }
+                },
+                {
+                    name: "WorldTimeAPI",
+                    url: "https://worldtimeapi.org/api/timezone/UTC",
+                    handler: async (response) => {
+                        const data = await response.json();
+                        return data.unixtime * 1000 + (data.datetime.includes('.') ? parseInt(data.datetime.split('.')[1].slice(0,3)) : 0);
+                    }
+                }
+            ];
+
+            for (const provider of providers) {
+                try {
+                    console.log(`Attempting sync with ${provider.name}...`);
+                    const start = performance.now();
+                    
+                    const response = await fetch(provider.url);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    
+                    const end = performance.now();
+                    const serverTimeMs = await provider.handler(response);
+                    
+                    if (!serverTimeMs || isNaN(serverTimeMs)) throw new Error("Invalid timestamp derived");
+
+                    // NTP-like logic
+                    const latency = (end - start) / 2;
+                    const localTime = Date.now();
+                    
+                    // Offset = ServerTime - LocalTime
+                    timeOffset = (serverTimeMs + latency) - localTime;
+                    
+                    isSynced = true;
+                    const msg = `Synced via ${provider.name}. Offset: ${Math.round(timeOffset)}ms`;
+                    statusDiv.textContent = msg;
+                    statusDiv.style.color = "green";
+                    logToScreen(msg);
+                    
+                    // Enable controls
+                    setUiState('IDLE');
+                    return; // Success, exit function
+
+                } catch (e) {
+                    console.warn(`${provider.name} failed:`, e);
+                    logToScreen(`${provider.name} failed: ${e.message}`);
+                    // Continue to next provider
+                }
+            }
+
+            // If we get here, all failed
+            isSynced = false;
+            statusDiv.textContent = "All Sync Attempts Failed. Reload to retry.";
+            statusDiv.style.color = "red";
+            logToScreen("CRITICAL: Could not sync time. Buttons disabled.");
+        }
+
+        function getCorrectedTime() {
+            return Date.now() + timeOffset;
+        }
+
+        function startActivity(label) {
+            if (!isSynced) return;
+
+            // Start Recording
+            currentLabel = label;
+            startTimestamp = getCorrectedTime();
+
+            // Update UI
+            setUiState('RECORDING', label);
+            
+            statusDiv.textContent = `Recording: ${label}`;
+            statusDiv.style.color = "green";
+            logToScreen(`STARTED: ${label} at ${startTimestamp}`);
+        }
+
+        function stopActivity() {
+            if (!currentLabel) return; 
+
+            const endTimestamp = getCorrectedTime();
+            const record = {
+                label: currentLabel,
+                start: startTimestamp,
+                end: endTimestamp
+            };
+
+            // Save to internal log
+            logs.push(record);
+            
+            logToScreen(`ENDED:   ${record.label} at ${record.end} (Duration: ${((record.end - record.start)/1000).toFixed(1)}s)`);
+
+            // Reset State
+            currentLabel = null;
+            startTimestamp = null;
+            
+            // Update UI (Ready state)
+            setUiState('IDLE');
+            
+            statusDiv.textContent = "Paused";
+            statusDiv.style.color = "#555";
+        }
+
+        function setUiState(state, activeLabel = null) {
+            if (state === 'IDLE') {
+                // Enabled: Activities, Save (if data exists)
+                // Disabled: Stop
+                activityButtons.forEach(btn => {
+                    btn.disabled = false;
+                    btn.classList.remove('active');
+                });
+                stopButton.textContent = "PAUSED";
+                stopButton.disabled = true; 
+                saveButton.disabled = logs.length === 0;
+            } 
+            else if (state === 'RECORDING') {
+                // Enabled: Stop
+                // Disabled: Activities, Save
+                activityButtons.forEach(btn => {
+                    btn.disabled = true;
+                    if (btn.textContent === activeLabel) {
+                        btn.classList.add('active'); 
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
+                stopButton.textContent = "STOP / PAUSE";
+                stopButton.disabled = false;
+                saveButton.disabled = true;
+            }
+        }
+
+        function toggleAllButtons(enabled) {
+            activityButtons.forEach(btn => btn.disabled = !enabled);
+            stopButton.disabled = !enabled;
+            saveButton.disabled = !enabled;
+        }
+
+        function logToScreen(msg) {
+            logDiv.textContent = msg + "\n" + logDiv.textContent;
+        }
+
+        async function saveData() {
+            if (logs.length === 0) {
+                alert("No data to save");
+                return;
+            }
+
+            saveButton.disabled = true;
+            saveButton.textContent = "Uploading...";
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ logs: logs })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert("Success! Saved as " + result.filename);
+                    logs = []; // Clear logs after successful upload
+                    logToScreen(`UPLOAD SUCCESS: ${result.filename}`);
+                    setUiState('IDLE'); // Updates button state
+                    saveButton.textContent = "Save to Cloud";
+                } else {
+                    throw new Error(result.message || "Unknown server error");
+                }
+            } catch (e) {
+                alert("Upload failed: " + e.message);
+                logToScreen(`UPLOAD FAILED: ${e.message}`);
+                saveButton.disabled = false;
+                saveButton.textContent = "Save to Cloud";
+            }
+        }
+
+        // Initial Sync on load
+        syncTime();
+
+    </script>
+</body>
+</html>

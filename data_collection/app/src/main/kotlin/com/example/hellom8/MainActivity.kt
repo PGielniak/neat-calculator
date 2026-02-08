@@ -18,75 +18,62 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.*
-import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.gson.Gson
 import java.io.File
 import java.io.FileWriter
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
-import java.util.*
-import java.util.concurrent.ExecutorService
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.Executors
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
-    private lateinit var previewView: PreviewView
+    // UI Elements
     private lateinit var recordButton: Button
-    private lateinit var recordSensorOnlyButton: Button
     private lateinit var statusText: TextView
     private lateinit var sensorDataText: TextView
-    private lateinit var timestampOverlay: TimestampOverlay
     
+    // Sensors
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
     
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var recording: Recording? = null
-    private lateinit var cameraExecutor: ExecutorService
-    private lateinit var saveExecutor: ExecutorService
+    // Execution
+    private val saveExecutor = Executors.newSingleThreadExecutor()
+    private val ntpExecutor = Executors.newSingleThreadExecutor()
     
+    // Data & State
     private val sensorDataList = mutableListOf<SensorData>()
     private var isRecording = false
-    private var isRecordingSensorOnly = false
     private var recordingStartTime = 0L
     private var currentRecordingTimestamp = ""
     private var recordingSegmentNumber = 0
-    private var isSegmentTransition = false
     
-    private val timestampHandler = Handler(Looper.getMainLooper())
+    // NTP
+    private var ntpOffset = 0L
+    private var isNtpSynced = false
+
+    // Auto-save
     private val autoSaveHandler = Handler(Looper.getMainLooper())
-    private val AUTO_SAVE_INTERVAL = 60000L // 1 minute in milliseconds
-    private val timestampUpdateRunnable = object : Runnable {
-        override fun run() {
-            if (isRecording) {
-                val currentTimestamp = System.currentTimeMillis()
-                timestampOverlay.updateTimestamp(currentTimestamp)
-                timestampHandler.postDelayed(this, 16) // ~60fps
-            }
-        }
-    }
+    private val AUTO_SAVE_INTERVAL = 60000L // 1 minute
     
     private val autoSaveRunnable = object : Runnable {
         override fun run() {
             if (isRecording) {
-                // Save current sensor data
+                // Save current segment and continue
                 saveSensorDataSegment()
-                
-                // Restart video recording for next segment
-                restartVideoRecording()
-                
-                // Schedule next auto-save
+                recordingSegmentNumber++
                 autoSaveHandler.postDelayed(this, AUTO_SAVE_INTERVAL)
             }
         }
     }
     
+    // Sensor values
     private var lastAccelX = 0f
     private var lastAccelY = 0f
     private var lastAccelZ = 0f
@@ -95,46 +82,45 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var lastGyroZ = 0f
     
     private var lastSensorSampleTime = 0L
-    private val SAMPLE_RATE_HZ = 50 // 50Hz as per UCI HAR dataset
-    private val SAMPLE_INTERVAL_MS = 1000L / SAMPLE_RATE_HZ // 20ms
+    private val SAMPLE_RATE_HZ = 50 
+    private val SAMPLE_INTERVAL_MS = 1000L / SAMPLE_RATE_HZ 
     
-    private val REQUIRED_PERMISSIONS = mutableListOf(
-        Manifest.permission.CAMERA,
-        Manifest.permission.RECORD_AUDIO
-    ).apply {
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-        }
-    }.toTypedArray()
+    private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+        arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+    } else {
+        emptyArray()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         
-        // Keep screen on during the activity to prevent recording interruption
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        
-        previewView = findViewById(R.id.previewView)
         recordButton = findViewById(R.id.recordButton)
-        recordSensorOnlyButton = findViewById(R.id.recordSensorOnlyButton)
         statusText = findViewById(R.id.statusText)
         sensorDataText = findViewById(R.id.sensorDataText)
-        timestampOverlay = findViewById(R.id.timestampOverlay)
+        
+        statusText.text = "Initializing sensors..."
         
         // Initialize sensors
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         
-        cameraExecutor = Executors.newSingleThreadExecutor()
-        saveExecutor = Executors.newSingleThreadExecutor()
+        // Sync NTP
+        syncNtpTime()
         
-        // Request permissions
         if (allPermissionsGranted()) {
-            startCamera()
             registerSensors()
+            statusText.text = "Ready (Syncing NTP...)"
+            recordButton.isEnabled = true
         } else {
-            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
+            if (REQUIRED_PERMISSIONS.isNotEmpty()) {
+                ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
+            } else {
+                registerSensors()
+                statusText.text = "Ready (Syncing NTP...)"
+                recordButton.isEnabled = true
+            }
         }
         
         recordButton.setOnClickListener {
@@ -145,48 +131,84 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
         
-        recordSensorOnlyButton.setOnClickListener {
-            if (isRecordingSensorOnly) {
-                stopSensorOnlyRecording()
-            } else {
-                startSensorOnlyRecording()
+        recordButton.text = "Start Recording"
+    }
+
+    private fun syncNtpTime() {
+        ntpExecutor.execute {
+            val providers = listOf(
+                TimeProvider(
+                    "TimeAPI.io",
+                    "https://timeapi.io/api/Time/current/zone?timeZone=UTC"
+                ) { response ->
+                    val json = JSONObject(response)
+                    val dateTime = json.getString("dateTime")
+                    // Parse ISO format using SimpleDateFormat (compatible with older Android)
+                    val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS", Locale.US)
+                    formatter.timeZone = TimeZone.getTimeZone("UTC")
+                    formatter.parse(dateTime)?.time ?: System.currentTimeMillis()
+                },
+                TimeProvider(
+                    "WorldTimeAPI",
+                    "https://worldtimeapi.org/api/timezone/UTC"
+                ) { response ->
+                    val json = JSONObject(response)
+                    val unixtime = json.getLong("unixtime")
+                    val datetime = json.getString("datetime")
+                    val millis = if (datetime.contains(".")) {
+                        val fractional = datetime.substringAfter(".").substringBefore("+").take(3)
+                        fractional.padEnd(3, '0').toInt()
+                    } else 0
+                    unixtime * 1000 + millis
+                }
+            )
+
+            for (provider in providers) {
+                try {
+                    val startTime = System.currentTimeMillis()
+                    val connection = URL(provider.url).openConnection() as HttpURLConnection
+                    connection.requestMethod = "GET"
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    
+                    val responseCode = connection.responseCode
+                    if (responseCode == 200) {
+                        val response = connection.inputStream.bufferedReader().use { it.readText() }
+                        val endTime = System.currentTimeMillis()
+                        
+                        val serverTimeMs = provider.parseResponse(response)
+                        val latency = (endTime - startTime) / 2
+                        val localTime = System.currentTimeMillis()
+                        
+                        ntpOffset = (serverTimeMs + latency) - localTime
+                        isNtpSynced = true
+                        
+                        runOnUiThread {
+                            val offsetSec = ntpOffset / 1000.0
+                            val formattedOffset = "%.3f".format(offsetSec)
+                            Toast.makeText(this@MainActivity, "Synced via ${provider.name}. Offset: ${formattedOffset}s", Toast.LENGTH_SHORT).show()
+                            if (!isRecording) statusText.text = "Ready (NTP Synced)"
+                        }
+                        return@execute
+                    }
+                } catch (e: Exception) {
+                    // Continue to next provider
+                }
+            }
+            
+            // All providers failed
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "All NTP providers failed. Using system time.", Toast.LENGTH_SHORT).show()
+                if (!isRecording) statusText.text = "Ready (No NTP)"
             }
         }
     }
-    
-    private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
-            
-            val recorder = Recorder.Builder()
-                .setQualitySelector(QualitySelector.from(Quality.HD))
-                .build()
-            videoCapture = VideoCapture.withOutput(recorder)
-            
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-            
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, videoCapture
-                )
-            } catch (e: Exception) {
-                Toast.makeText(this, "Camera binding failed: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }, ContextCompat.getMainExecutor(this))
-    }
+
+    // Helper to get corrected time
+    private val currentTimeMillis: Long
+        get() = System.currentTimeMillis() + ntpOffset
     
     private fun registerSensors() {
-        // Use SENSOR_DELAY_GAME (~50Hz) to match UCI HAR dataset specification
-        // Additional rate limiting in onSensorChanged ensures exact 50Hz
         accelerometer?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
@@ -196,312 +218,60 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
     
     private fun startRecording() {
-        val videoCapture = this.videoCapture ?: return
-        
-        recordButton.isEnabled = false
+        isRecording = true
         sensorDataList.clear()
         
-        val timestamp = System.currentTimeMillis().toString()
+        val timestamp = currentTimeMillis.toString()
         currentRecordingTimestamp = timestamp
+        recordingStartTime = currentTimeMillis
         recordingSegmentNumber = 0
         
-        // Use direct file output for consistent naming
-        val videoDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "SensorRecording")
-        if (!videoDir.exists()) {
-            videoDir.mkdirs()
-        }
-        val videoFile = File(videoDir, "$timestamp.mp4")
+        autoSaveHandler.postDelayed(autoSaveRunnable, AUTO_SAVE_INTERVAL)
         
-        val fileOutputOptions = FileOutputOptions.Builder(videoFile).build()
+        recordButton.text = "Stop Recording"
+        statusText.text = "Recording... (Auto-save enabled)"
         
-        recording = videoCapture.output
-            .prepareRecording(this, fileOutputOptions)
-            .apply {
-                if (ActivityCompat.checkSelfPermission(
-                        this@MainActivity,
-                        Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    withAudioEnabled()
-                }
-            }
-            .start(ContextCompat.getMainExecutor(this), createRecordingListener())
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
     
     private fun stopRecording() {
-        isSegmentTransition = false // Ensure this is marked as user stop, not transition
-        recording?.stop()
-        recording = null
-    }
-    
-    private fun createRecordingListener() = androidx.core.util.Consumer<VideoRecordEvent> { recordEvent ->
-            when (recordEvent) {
-                is VideoRecordEvent.Start -> {
-                    if (recordingSegmentNumber == 0) {
-                        // First segment
-                        isRecording = true
-                        recordingStartTime = System.currentTimeMillis()
-                        timestampHandler.post(timestampUpdateRunnable)
-                        autoSaveHandler.postDelayed(autoSaveRunnable, AUTO_SAVE_INTERVAL)
-                    } else {
-                        // Subsequent segments
-                        isSegmentTransition = false
-                    }
-                    runOnUiThread {
-                        recordButton.apply {
-                            text = "Stop Recording"
-                            isEnabled = true
-                        }
-                        statusText.text = if (recordingSegmentNumber == 0) {
-                            "Recording... (auto-save enabled)"
-                        } else {
-                            "Recording... segment $recordingSegmentNumber"
-                        }
-                    }
-                }
-                is VideoRecordEvent.Finalize -> {
-                    if (!recordEvent.hasError()) {
-                        if (!isSegmentTransition) {
-                            // Final stop - save remaining data
-                            val msg = "Video saved: ${recordEvent.outputResults.outputUri}"
-                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                            val finalData = sensorDataList.toList()
-                            saveExecutor.execute {
-                                saveSensorDataInBackground(currentRecordingTimestamp, finalData)
-                            }
-                        }
-                    } else {
-                        recording?.close()
-                        recording = null
-                        Toast.makeText(
-                            this,
-                            "Video recording error: ${recordEvent.error}",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                    
-                    if (!isSegmentTransition) {
-                        isRecording = false
-                        timestampHandler.removeCallbacks(timestampUpdateRunnable)
-                        autoSaveHandler.removeCallbacks(autoSaveRunnable)
-                        runOnUiThread {
-                            recordButton.apply {
-                                text = "Start Recording"
-                                isEnabled = true
-                            }
-                            statusText.text = "Ready to record"
-                        }
-                    }
-                }
-            }
-    }
-    
-    private fun restartVideoRecording() {
-        // Mark that we're doing a segment transition, not stopping recording
-        isSegmentTransition = true
+        isRecording = false
+        autoSaveHandler.removeCallbacks(autoSaveRunnable)
         
-        // Stop current recording
-        recording?.stop()
-        
-        // Increment segment counter
-        recordingSegmentNumber++
-        
-        // Start new video recording with new segment name
-        val videoCapture = this.videoCapture ?: return
-        val segmentTimestamp = "${currentRecordingTimestamp}_seg${recordingSegmentNumber}"
-        
-        val videoDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "SensorRecording")
-        if (!videoDir.exists()) {
-            videoDir.mkdirs()
+        val finalData = sensorDataList.toList()
+        saveExecutor.execute {
+            saveSensorData(currentRecordingTimestamp, finalData, isFinal = true)
         }
-        val videoFile = File(videoDir, "$segmentTimestamp.mp4")
         
-        val fileOutputOptions = FileOutputOptions.Builder(videoFile).build()
-        
-        recording = videoCapture.output
-            .prepareRecording(this, fileOutputOptions)
-            .apply {
-                if (ActivityCompat.checkSelfPermission(
-                        this@MainActivity,
-                        Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    withAudioEnabled()
-                }
-            }
-            .start(ContextCompat.getMainExecutor(this), createRecordingListener())
+        recordButton.text = "Start Recording"
+        statusText.text = "Stopped. Saving..."
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
     
     private fun saveSensorDataSegment() {
         if (sensorDataList.isEmpty()) return
         
-        val segmentTimestamp = "${currentRecordingTimestamp}_seg${recordingSegmentNumber}"
-        val sampleCount = sensorDataList.size
-        
-        // Create a copy of the data to save in background
         val dataToSave = sensorDataList.toList()
-        
-        // Save on background thread to avoid UI freeze
-        saveExecutor.execute {
-            saveSensorDataInBackground(segmentTimestamp, dataToSave)
-            
-            runOnUiThread {
-                Toast.makeText(
-                    this,
-                    "Auto-saved segment ${recordingSegmentNumber} ($sampleCount samples)",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
-    }
-    
-    private fun saveSensorDataInBackground(timestamp: String, data: List<SensorData>) {
-        try {
-            val fileName = "$timestamp.json"
-            val gson = Gson()
-            val jsonData = gson.toJson(data)
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10+ - use MediaStore
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/SensorRecording")
-                }
-                
-                val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), contentValues)
-                uri?.let {
-                    contentResolver.openOutputStream(it)?.use { outputStream ->
-                        outputStream.write(jsonData.toByteArray())
-                    }
-                }
-            } else {
-                // Android 9 and below - use external storage
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SensorRecording")
-                if (!dir.exists()) {
-                    dir.mkdirs()
-                }
-                val file = File(dir, fileName)
-                FileWriter(file).use { writer ->
-                    writer.write(jsonData)
-                }
-            }
-        } catch (e: Exception) {
-            runOnUiThread {
-                Toast.makeText(this, "Error saving sensor data: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-    
-    private fun saveSensorData(timestamp: String) {
-        try {
-            val fileName = "$timestamp.json"
-            val gson = Gson()
-            val jsonData = gson.toJson(sensorDataList)
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10+ - use MediaStore
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/SensorRecording")
-                }
-                
-                val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), contentValues)
-                uri?.let {
-                    contentResolver.openOutputStream(it)?.use { outputStream ->
-                        outputStream.write(jsonData.toByteArray())
-                    }
-                    runOnUiThread {
-                        Toast.makeText(
-                            this,
-                            "Sensor data saved: ${sensorDataList.size} samples",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-            } else {
-                // Android 9 and below - use external storage
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SensorRecording")
-                if (!dir.exists()) {
-                    dir.mkdirs()
-                }
-                val file = File(dir, fileName)
-                FileWriter(file).use { writer ->
-                    writer.write(jsonData)
-                }
-                runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "Sensor data saved: ${sensorDataList.size} samples\n${file.absolutePath}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-        } catch (e: Exception) {
-            runOnUiThread {
-                Toast.makeText(this, "Error saving sensor data: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-    
-    private fun startSensorOnlyRecording() {
-        recordSensorOnlyButton.isEnabled = false
-        recordButton.isEnabled = false // Disable video recording during sensor-only mode
         sensorDataList.clear()
         
-        val timestamp = System.currentTimeMillis().toString()
-        currentRecordingTimestamp = timestamp
-        recordingSegmentNumber = 0
+        val timestamp = "${currentRecordingTimestamp}_seg${recordingSegmentNumber}"
         
-        isRecordingSensorOnly = true
-        recordingStartTime = System.currentTimeMillis()
-        
-        // Start auto-save for sensor data
-        autoSaveHandler.postDelayed(autoSaveRunnable, AUTO_SAVE_INTERVAL)
-        
-        runOnUiThread {
-            recordSensorOnlyButton.text = "Stop Sensor Recording"
-            recordSensorOnlyButton.isEnabled = true
-            statusText.text = "Recording sensors only... (no video)"
-            // Don't keep screen on for sensor-only mode to save battery
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
-    }
-    
-    private fun stopSensorOnlyRecording() {
-        isRecordingSensorOnly = false
-        autoSaveHandler.removeCallbacks(autoSaveRunnable)
-        
-        // Save final sensor data
-        val finalData = sensorDataList.toList()
         saveExecutor.execute {
-            saveSensorOnlyDataInBackground(currentRecordingTimestamp, finalData)
-        }
-        
-        runOnUiThread {
-            recordSensorOnlyButton.text = "Record Sensors Only"
-            recordSensorOnlyButton.isEnabled = true
-            recordButton.isEnabled = true
-            statusText.text = "Sensor recording stopped"
-            Toast.makeText(this, "Sensor data saved: ${finalData.size} samples", Toast.LENGTH_LONG).show()
-            // Restore keep screen on flag
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            saveSensorData(timestamp, dataToSave, isFinal = false)
         }
     }
     
-    private fun saveSensorOnlyDataInBackground(timestamp: String, data: List<SensorData>) {
+    private fun saveSensorData(baseName: String, data: List<SensorData>, isFinal: Boolean) {
         try {
-            val fileName = "$timestamp.json"
+            val fileName = "$baseName.json"
             val gson = Gson()
             val jsonData = gson.toJson(data)
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10+ - use MediaStore with different folder
                 val contentValues = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                     put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/rawSensorRecordings")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS + "/SensorRecording")
                 }
                 
                 val uri = contentResolver.insert(MediaStore.Files.getContentUri("external"), contentValues)
@@ -511,11 +281,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     }
                 }
             } else {
-                // Android 9 and below - use external storage
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "rawSensorRecordings")
-                if (!dir.exists()) {
-                    dir.mkdirs()
-                }
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SensorRecording")
+                if (!dir.exists()) dir.mkdirs()
                 val file = File(dir, fileName)
                 FileWriter(file).use { writer ->
                     writer.write(jsonData)
@@ -523,18 +290,20 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
             
             runOnUiThread {
-                Toast.makeText(this, "Sensor-only data saved (${data.size} samples)", Toast.LENGTH_SHORT).show()
+                val msg = if (isFinal) "Saved final: ${data.size} samples" else "Auto-saved seg $recordingSegmentNumber"
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                if (isFinal) statusText.text = "Ready (NTP Synced)"
             }
         } catch (e: Exception) {
             runOnUiThread {
-                Toast.makeText(this, "Error saving sensor data: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Error saving: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
-    
+
     override fun onSensorChanged(event: SensorEvent?) {
         event?.let {
-            val currentTime = System.currentTimeMillis()
+            val currentTime = currentTimeMillis
             val nanoTime = event.timestamp
             
             when (event.sensor.type) {
@@ -550,18 +319,14 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 }
             }
             
-            // Update UI
             runOnUiThread {
-                sensorDataText.text = "Accel: [%.2f, %.2f, %.2f]\nGyro: [%.2f, %.2f, %.2f]".format(
+                sensorDataText.text = "Accel: [%.2f, %.2f, %.2f]\nGyro: [%.2f, %.2f, %.2f]\nNTP: ${if(isNtpSynced) "Yes" else "No"} ($ntpOffset ms)".format(
                     lastAccelX, lastAccelY, lastAccelZ,
                     lastGyroX, lastGyroY, lastGyroZ
                 )
             }
             
-            // Record data if recording at constant 50Hz rate (UCI HAR dataset specification)
-            // Works for both video and sensor-only modes
-            if (isRecording || isRecordingSensorOnly) {
-                // Only save if enough time has elapsed (20ms for 50Hz)
+            if (isRecording) {
                 if (currentTime - lastSensorSampleTime >= SAMPLE_INTERVAL_MS) {
                     val sensorData = SensorData(
                         timestamp = currentTime,
@@ -580,13 +345,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
     
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Not needed for this implementation
-    }
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     
-    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
+    private fun allPermissionsGranted() = (REQUIRED_PERMISSIONS.isEmpty() || REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
-    }
+    })
     
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -596,25 +359,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                startCamera()
                 registerSensors()
+                recordButton.isEnabled = true
             } else {
-                Toast.makeText(this, "Permissions not granted.", Toast.LENGTH_SHORT).show()
-                finish()
+                Toast.makeText(this, "Permissions not granted: " + permissions.joinToString(), Toast.LENGTH_SHORT).show()
             }
         }
     }
     
     override fun onDestroy() {
         super.onDestroy()
-        timestampHandler.removeCallbacks(timestampUpdateRunnable)
         autoSaveHandler.removeCallbacks(autoSaveRunnable)
         sensorManager.unregisterListener(this)
-        cameraExecutor.shutdown()
         saveExecutor.shutdown()
+        ntpExecutor.shutdown()
     }
     
     companion object {
         private const val REQUEST_CODE_PERMISSIONS = 10
     }
+    
+    // Time provider data class
+    private data class TimeProvider(
+        val name: String,
+        val url: String,
+        val parseResponse: (String) -> Long
+    )
 }

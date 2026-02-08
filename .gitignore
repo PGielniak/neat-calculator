@@ -104,3 +104,6 @@ mlruns/
 .vscode/launch.json
 .vscode/settings.json
 .vscode
+Include/
+Lib/
+Scripts/

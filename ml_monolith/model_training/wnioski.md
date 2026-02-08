@@ -80,3 +80,7 @@
    - Brak klasy LAYING i WALKING_UPSTAIRS w danych własnych
 
 4. **Rekomendacja**: Zebrać więcej danych sensorycznych, szczególnie dla niedoreprezentowanych klas (SITTING, WALKING_DOWNSTAIRS), oraz dodać nagrania LAYING i WALKING_UPSTAIRS, aby poprawić model produkcyjny.
+
+5. **Ryzyko łączenia zbiorów (Data Mismatch)**: Analiza wykazała, że łączenie danych Kaggle z własnymi wprowadza szum informacyjny. Dane Kaggle są statystycznie znormalizowane (np. ujemna energia), podczas gdy własne dane zachowują fizyczną charakterystykę sensora. Prowadzi to do "rozjazdu" modelu i spadku jakości predykcji w warunkach rzeczywistych.
+
+6. **Specjalizacja modelu (Device Specific)**: Po odseparowaniu danych Kaggle i dotrenowaniu modelu wyłącznie na powiększonym zbiorze własnym, **accuracy wzrosło z 85% do 92%**. Model skutecznie wyspecjalizował się w charakterystyce konkretnego urządzenia (sensora), co znacząco poprawiło jakość predykcji w docelowym środowisku, eliminując błędy wynikające z różnic w dystrybucji danych.
