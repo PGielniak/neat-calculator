@@ -14,8 +14,18 @@ example payload:
 }
 
 {
-    "raw_data_storage_account_container_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/0802026",
-    "labels_storage_account_blob_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/0802026/merged_labels.csv"
+    "raw_data_storage_account_container_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/08-02-2026",
+    "labels_storage_account_blob_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/08-02-2026/merged_labels.csv"
+}
+
+{
+    "raw_data_storage_account_container_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/09-02-2026",
+    "labels_storage_account_blob_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/09-02-2026/merged_labels.csv"
+}
+
+{
+    "raw_data_storage_account_container_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/10-02-2026",
+    "labels_storage_account_blob_uri": "wasbs://sensor-data@harmlstorage.blob.core.windows.net/10-02-2026/labelss.csv"
 }
 
 ```

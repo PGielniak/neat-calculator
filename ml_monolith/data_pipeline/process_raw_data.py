@@ -196,6 +196,8 @@ def merge_json_files(directory: str, skipped_files: list[str]=[]) -> list[Sensor
         with open(file_path, 'r') as f:
             data = json.load(f)
             merged_data.extend(data)
+            
+    merged_data = sorted(merged_data, key=lambda x: x['timestamp'])
 
     return merged_data
 
@@ -213,10 +215,10 @@ def label_data_v2(data: list[SensorRecording], labels_csv_path: str) -> pd.DataF
 
     for index, row in labels_df.iterrows():
         # Calculate buffered timestamps (5 seconds = 5000ms)
-        start_timestamp = row['StartTimestamp_Unix_Ms'] + 5000
-        end_timestamp = row['EndTimestamp_Unix_Ms'] - 5000
+        start_timestamp = row['StartTimestamp_Unix_Ms'] 
+        end_timestamp = row['EndTimestamp_Unix_Ms']
         
-        logger.info(f"\nLabel {index+1}: {row['Label']}")
+        logger.info(f"Label {index+1}: {row['Label']}")
         logger.info(f"  Original range: {row['StartTimestamp_Unix_Ms']} to {row['EndTimestamp_Unix_Ms']}")
         logger.info(f"  Buffered range: {start_timestamp} to {end_timestamp}")
         
@@ -226,9 +228,9 @@ def label_data_v2(data: list[SensorRecording], labels_csv_path: str) -> pd.DataF
         
         if matching_rows > 0:
             sensor_data_df.loc[mask, 'label'] = row['Label']
-            logger.info(f"  ✓ Labeled {matching_rows} sensor data points")
+            logger.info(f"Labeled {matching_rows} sensor data points")
         else:
-            logger.info(f"  ⚠ No matching sensor data found!")
+            logger.info(f"No matching sensor data found!")
 
     logger.info(f"\nLabeling complete!")
     sensor_data_df.info()
@@ -321,7 +323,7 @@ def remove_duplicates(data_df: pd.DataFrame, sensor_cols: list[str]) -> pd.DataF
     logger.info(f"Data time span: {span_seconds:.2f} seconds ({span_seconds/3600:.2f} hours)")
     
     if span_seconds > (24 * 3600): # > 24 hours
-        logger.warning(f"⚠️ Data spans longer than 24 hours! This might cause high memory usage or crashes during resampling.")
+        logger.warning(f" Data spans longer than 24 hours! This might cause high memory usage or crashes during resampling.")
     
     data_df["ts"] = data_df["timestampNanos"] / 1e9
     data_df["dt"] = data_df["ts"].diff()

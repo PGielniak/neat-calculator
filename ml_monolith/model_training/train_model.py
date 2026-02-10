@@ -8,9 +8,10 @@ import sys
 from pathlib import Path
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 import joblib
 import tempfile
 import shutil
@@ -18,6 +19,7 @@ import os
 import mlflow.xgboost
 import logging
 from infra.db.database_utils import DatabaseEngine, get_postgres_db_engine
+import numpy as np
 
 #TODO refactor into smaller parametrzed functions
 
@@ -118,7 +120,10 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_p
             learning_rate=0.3
         )
         model.fit(X_train, y_train_encoded)
-        
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        xgb_cv_scores = cross_val_score(model, X_train, y_train_encoded, cv=cv, scoring='accuracy')
+        logger.info("XGBoost 5-fold CV accuracy scores:", xgb_cv_scores)
+        logger.info("Mean accuracy: {:.4f} (+/- {:.4f})".format(np.mean(xgb_cv_scores), np.std(xgb_cv_scores)))
         # Evaluate
         y_pred_encoded = model.predict(X_test)
         y_pred = label_encoder.inverse_transform(y_pred_encoded)
@@ -127,10 +132,36 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_p
         
         accuracy = model.score(X_test, y_test_encoded)
         
+        conf_matrix = confusion_matrix(y_test, y_pred)
+        
+        classification_rep = classification_report(y_test, y_pred)
+        
         # Log metrics
         mlflow.log_metric("accuracy", accuracy)
         mlflow.log_param("n_features", X.shape[1])
         mlflow.log_param("n_classes", len(label_encoder.classes_))
+        mlflow.log_param("confusion matrix", conf_matrix.tolist())
+        conf_matrix_df = pd.DataFrame(
+            conf_matrix,
+            index=label_encoder.classes_,
+            columns=label_encoder.classes_
+        )
+        conf_matrix_path = "confusion_matrix.csv"
+        conf_matrix_df.to_csv(conf_matrix_path)
+        mlflow.log_artifact(conf_matrix_path)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=conf_matrix,
+            display_labels=label_encoder.classes_
+        )
+        disp.plot(ax=ax, cmap="Blues", colorbar=False, xticks_rotation="vertical")
+        ax.set_title("Confusion Matrix")
+        fig.tight_layout()
+        mlflow.log_figure(fig, "confusion_matrix.png")
+        plt.close(fig)
+        mlflow.log_param("classification report", classification_rep)
+        mlflow.log_param("cv_accuracy_mean", np.mean(xgb_cv_scores))
+        mlflow.log_param("cv_accuracy_std", np.std(xgb_cv_scores))
         
         # Log model with signature (will be saved to Azure Blob)
         from mlflow.models.signature import infer_signature
@@ -158,7 +189,7 @@ async def load_kaggle_data_fromdb(database_engine: DatabaseEngine, columns: list
     
     return data
 
-async def balance_classes(data: pd.DataFrame) -> pd.DataFrame:
+async def balance_classes(data: pd.DataFrame, method: str = 'least_represented') -> pd.DataFrame:
     logger.info("Balancing classes by undersampling the majority class...")
     class_counts = data["Activity"].value_counts()
     logger.info(f"Original class distribution:\n{class_counts}")
@@ -167,21 +198,67 @@ async def balance_classes(data: pd.DataFrame) -> pd.DataFrame:
     majority_class = class_counts.idxmax()
     minority_classes = class_counts[class_counts.index != majority_class].index
     
-    # Keep all minority class samples and undersample the majority class
-    balanced_data = pd.concat([
-        data[data["Activity"] == cls] for cls in minority_classes
-    ] + [data[data["Activity"] == majority_class].sample(n=class_counts[minority_classes].max(), random_state=42)])
-    
-    balanced_class_counts = balanced_data["Activity"].value_counts()
-    logger.info(f"Balanced class distribution:\n{balanced_class_counts}")
-    
+    if method == 'least_represented':
+        # get the least represented class
+        least_represented_class = class_counts.idxmin()
+        logger.info(f"Majority class: {majority_class} with {class_counts[majority_class]} samples")
+        logger.info(f"Minority classes: {minority_classes.tolist()} with counts:\n{class_counts[minority_classes]}")
+        
+        # cut all classess to the least represented class count
+        target_count = class_counts[least_represented_class]
+        
+        # display the target count for each class
+        logger.info(f"Target count for each class after balancing: {target_count}")
+        
+        # undersample all classess to the target count
+        balanced_data = data.groupby("Activity").apply(lambda x: x.sample(target_count, random_state=42)).reset_index(drop=True)
+    elif method == 'cap_at_median':
+        median_count = int(class_counts.median())
+        logger.info(f"Majority class: {majority_class} with {class_counts[majority_class]} samples")
+        logger.info(f"Minority classes: {minority_classes.tolist()} with counts:\n{class_counts[minority_classes]}")
+        logger.info(f"Target count for each class after balancing: {median_count}")
+        
+        classes_above_median = class_counts[class_counts > median_count].index
+        classes_below_median = class_counts[class_counts <= median_count].index
+        
+        logger.info(f"Classes above median: {classes_above_median.tolist()} with counts:\n{class_counts[classes_above_median]}")
+        logger.info(f"Classes at or below median: {classes_below_median.tolist()}")
+                    
+        above_median_sampled = data[data["Activity"].isin(classes_above_median)].groupby("Activity").apply(lambda x: x.sample(median_count, random_state=42)).reset_index(drop=True)
+        
+        below_median_unsampled = data[data["Activity"].isin(classes_below_median)]
+        
+        combined_data = pd.concat([above_median_sampled, below_median_unsampled], ignore_index=True)
+        balanced_data = combined_data.sample(frac=1, random_state=42).reset_index(drop=True)
+    else:
+        logger.error(f"Unknown balancing method: {method}. No balancing applied.")
+        balanced_data = data
     return balanced_data
 
+
+
+async def drop_columns_with_too_much_importance(df: pd.DataFrame):
+    to_drop_patterns = ['angle', 'tGravityAcc-X', 'tGravityAcc-Y', 'tGravityAcc-Z', 
+                    'tBodyAcc-X', 'tBodyAcc-Y', 'tBodyAcc-Z',
+                    'fBodyAcc-X', 'fBodyAcc-Y', 'fBodyAcc-Z']
+    
+    cols_to_drop = [col for col in df.columns if any(pat in col for pat in to_drop_patterns)]
+    logger.info(f"Found {len(cols_to_drop)} columns to drop: {cols_to_drop}")
+    logger.info(f"Original shape: {df.shape}")
+    
+    # Actually drop the columns (assign result back to df)
+    df = df.drop(columns=cols_to_drop)
+    logger.info(f"New shape after dropping: {df.shape}")
+    
+    return df
+    
+    
 async def train_model_async(db_engine: DatabaseEngine):
     backend_store_uri, artifact_uri = await prepare_variables()
     await setup_and_test_mlflow_connection(backend_store_uri)
     data = await load_data_fromdb(db_engine)
-    balanced_data = await balance_classes(data)
+    remove_problematic_columns = await drop_columns_with_too_much_importance(data)
+    balanced_data = await balance_classes(data=remove_problematic_columns,method='cap_at_median')
     # Scale user data to match Kaggle range [-1, 1]
     logger.info("Scaling user data to [-1, 1] range to match Kaggle distribution...")
     

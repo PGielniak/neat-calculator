@@ -3,7 +3,7 @@
 1. Deploy locally
 
 ```
-docker-compose up
+docker compose up
 
 ``
 
