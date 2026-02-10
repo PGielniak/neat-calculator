@@ -3,6 +3,8 @@ from azure.storage.blob import BlobServiceClient
 import os
 import logging
 
+from requests import get
+
 #TODO: Add error handling and logging
 #TODO: test with different storage account configurations
 def download_blob_to_dir(storage_account_blob_uri: str, download_dir: str, logger: logging.Logger = None) -> None:
@@ -18,38 +20,7 @@ def download_blob_to_dir(storage_account_blob_uri: str, download_dir: str, logge
     """
     if logger is None:
         logger = logging.getLogger(__name__)
-    
-    ACCOUNT_NAME = storage_account_blob_uri.split('@')[1].split('.')[0]
-    CONTAINER = storage_account_blob_uri.split('://')[1].split('@')[0]
-    
-    # Extract the path after the domain, then remove the container name if it's duplicated
-    path_after_domain = '/'.join(storage_account_blob_uri.split('://')[1].split('@')[1].split('/')[1:])
-    
-    # If the path starts with the container name again, remove it
-    if path_after_domain.startswith(CONTAINER + '/'):
-        BLOB_PATH = path_after_domain[len(CONTAINER) + 1:]
-    else:
-        BLOB_PATH = path_after_domain
-    
-    # Remove trailing slash if present
-    BLOB_PATH = BLOB_PATH.rstrip('/')
-    
-    logger.debug(f"Storage Account: {ACCOUNT_NAME}, Container: {CONTAINER}, Blob Path: {BLOB_PATH}")
-    
-    account_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net"
-    
-    connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    if connection_string:
-        logger.info("Using AZURE_STORAGE_CONNECTION_STRING for authentication.")
-        blob_service_client = BlobServiceClient.from_connection_string(conn_str=connection_string)
-    else:
-        try:
-            logger.info("Using DefaultAzureCredential for authentication.")
-            credential = DefaultAzureCredential()
-            blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
-        except Exception as e:
-            logger.error(f"Failed to authenticate with DefaultAzureCredential: {e}")
-            raise e
+    blob_service_client, ACCOUNT_NAME, CONTAINER, BLOB_PATH = get_blob_service_client(storage_account_blob_uri, logger)
     
     container_client = blob_service_client.get_container_client(CONTAINER)
     
@@ -96,3 +67,79 @@ def download_blob_to_dir(storage_account_blob_uri: str, download_dir: str, logge
         downloaded_count += 1
     
     logger.info(f"Downloaded {downloaded_count} blob(s) from {storage_account_blob_uri}")
+    
+
+def list_blobs_in_prefix(storage_account_blob_uri: str, logger: logging.Logger = None) -> list:
+    """
+    Lists blobs in Azure Storage under a given prefix.
+
+    Args:
+        storage_account_blob_uri (str): The full URI of the blob prefix in Azure Storage.
+        logger (logging.Logger): Optional logger instance.
+    Returns:
+        list: A list of blob names under the specified prefix.
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    blob_service_client, ACCOUNT_NAME, CONTAINER, BLOB_PATH = get_blob_service_client(storage_account_blob_uri, logger)
+    
+    container_client = blob_service_client.get_container_client(CONTAINER)
+    
+    logger.info(f"Listing blobs with prefix: {BLOB_PATH}")
+    
+    blob_list = container_client.list_blobs(name_starts_with=BLOB_PATH)
+    
+    blob_names = [blob.name for blob in blob_list]
+    
+    logger.info(f"Found {len(blob_names)} blob(s) under prefix {BLOB_PATH}")
+    
+    return blob_names
+    
+    
+def get_blob_service_client(storage_account_blob_uri: str, logger: logging.Logger = None) -> BlobServiceClient:
+    """
+    Creates a BlobServiceClient for the given Azure Storage blob URI.
+
+    Args:
+        storage_account_blob_uri (str): The full URI of the blob or prefix in Azure Storage.
+        logger (logging.Logger): Optional logger instance.
+    Returns:
+        BlobServiceClient: An authenticated client to interact with Azure Blob Storage. 
+    """
+    
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
+    ACCOUNT_NAME = storage_account_blob_uri.split('@')[1].split('.')[0]
+    CONTAINER = storage_account_blob_uri.split('://')[1].split('@')[0]
+    
+    # Extract the path after the domain, then remove the container name if it's duplicated
+    path_after_domain = '/'.join(storage_account_blob_uri.split('://')[1].split('@')[1].split('/')[1:])
+    
+    # If the path starts with the container name again, remove it
+    if path_after_domain.startswith(CONTAINER + '/'):
+        BLOB_PATH = path_after_domain[len(CONTAINER) + 1:]
+    else:
+        BLOB_PATH = path_after_domain
+    
+    # Remove trailing slash if present
+    BLOB_PATH = BLOB_PATH.rstrip('/')
+    
+    logger.debug(f"Storage Account: {ACCOUNT_NAME}, Container: {CONTAINER}, Blob Path: {BLOB_PATH}")
+    
+    account_url = f"https://{ACCOUNT_NAME}.blob.core.windows.net"
+    
+    connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if connection_string:
+        logger.info("Using AZURE_STORAGE_CONNECTION_STRING for authentication.")
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str=connection_string)
+    else:
+        try:
+            logger.info("Using DefaultAzureCredential for authentication.")
+            credential = DefaultAzureCredential()
+            blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
+        except Exception as e:
+            logger.error(f"Failed to authenticate with DefaultAzureCredential: {e}")
+            raise e
+        
+    return blob_service_client, ACCOUNT_NAME, CONTAINER, BLOB_PATH

@@ -48,3 +48,17 @@ services:
       - mlflow
       - data-pipeline-webhook
 
+  prediction-api:
+    build: .
+    image: ml-monolith:latest
+    command: uvicorn prediction.prediction_api:app --host 0.0.0.0 --port 8002 --log-level info
+    env_file:
+      - .env
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+    depends_on:
+      - mlflow
+      - data-pipeline-webhook
+      - model-training-webhook
+
