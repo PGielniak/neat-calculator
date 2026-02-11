@@ -8,6 +8,10 @@ def load_production_model(model_name, model_alias):
     Load the registered model by alias (e.g., 'production').
     Returns tuple: (model, scaler)
     """
+    # Ensure tracking URI is set (should be set by caller, but double-check)
+    current_uri = mlflow.get_tracking_uri()
+    print(f"Current MLflow tracking URI: {current_uri}")
+    
     # Use @ syntax for aliases (newer MLflow) instead of / for stages
     model_uri = f"models:/{model_name}@{model_alias}"
     print(f"Loading model from MLflow URI: {model_uri}")

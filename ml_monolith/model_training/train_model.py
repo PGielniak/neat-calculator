@@ -111,6 +111,12 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_p
         if scaler_path and os.path.exists(scaler_path):
             mlflow.log_artifact(scaler_path)
 
+        # Save and log label encoder
+        label_encoder_path = os.path.join(os.path.dirname(scaler_path), "label_encoder.pkl")
+        joblib.dump(label_encoder, label_encoder_path)
+        mlflow.log_artifact(label_encoder_path)
+        logger.info(f"Label encoder saved and logged to MLflow")
+
         # Train model
         model = xgb.XGBClassifier(
             eval_metric='mlogloss',

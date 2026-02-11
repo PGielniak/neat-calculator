@@ -294,6 +294,11 @@ def label_data(data: list[SensorRecording], labels_csv_path: str) -> pd.DataFram
 def remove_duplicates(data_df: pd.DataFrame, sensor_cols: list[str]) -> pd.DataFrame:
     logger.info("Removing duplicate timestamps and aggregating sensor data.")
     
+    # Create timestampNanos from timestamp if it doesn't exist
+    if "timestampNanos" not in data_df.columns:
+        logger.info("timestampNanos column not found. Creating from timestamp (ms) * 1,000,000")
+        data_df["timestampNanos"] = data_df["timestamp"] * 1_000_000
+    
     # Fix for relative timestampNanos (system uptime) vs absolute timestamp (wall clock)
     # If timestampNanos values are small (e.g. < 2017 which is ~1.5e18 ns), assume they are not epoch time.
     # In that case, use 'timestamp' (milliseconds) to overwrite timestampNanos.
