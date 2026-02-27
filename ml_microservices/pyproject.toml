@@ -1,0 +1,25 @@
+[project]
+name = "ml-microservices"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "PGielniak", email = "patrykgielniak35@gmail.com" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pandas==2.3.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.workspace]
+members = [
+    "src/ml_microservices/data_pipeline",
+    "src/ml_microservices/database",
+    "src/ml_microservices/model_training",
+    "src/ml_microservices/prediction_api",
+    "src/ml_microservices/shared",
+]

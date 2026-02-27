@@ -1,0 +1,26 @@
+[project]
+name = "model-training"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "PGielniak", email = "patrykgielniak35@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "database",
+    "dotenv>=0.9.9",
+    "fastapi>=0.133.1",
+    "mlflow==3.9.0",
+    "pandas>=2.3.3",
+    "sqlalchemy>=2.0.47",
+    "uvicorn>=0.41.0",
+    "xgboost==3.1.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+database = { workspace = true }

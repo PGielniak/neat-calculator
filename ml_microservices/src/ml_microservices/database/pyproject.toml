@@ -1,0 +1,16 @@
+[project]
+name = "database"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "PGielniak", email = "patrykgielniak35@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg2-binary>=2.9.11",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
