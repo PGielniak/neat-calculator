@@ -1,5 +1,4 @@
 # Configure MLflow with PostgreSQL + Azure Blob Storage
-from multiprocessing.spawn import prepare
 import os
 from venv import logger
 from dotenv import load_dotenv
@@ -8,7 +7,7 @@ import sys
 from pathlib import Path
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 import matplotlib.pyplot as plt
@@ -20,19 +19,60 @@ import mlflow.xgboost
 import logging
 from database.database_utils import DatabaseEngine, get_postgres_db_engine
 import numpy as np
+from datetime import datetime
 
 #TODO refactor into smaller parametrzed functions
 
 logger =   logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def get_required_env(key: str) -> str:
+    if not (value := os.getenv(key)):
+        raise ValueError(f"{key} not set in environment")
+    return value
+
+
+def find_best_model(X_train, y_train):
+    param_dist = {
+        "n_estimators": [100, 200, 300, 500],
+        "max_depth": [3, 4, 6, 8, 10],
+        "learning_rate": [0.01, 0.05, 0.1, 0.2, 0.3],
+        "subsample": [0.6, 0.8, 1.0],
+        "colsample_bytree": [0.6, 0.8, 1.0],
+        "gamma": [0, 0.1, 0.3, 0.5],
+        "min_child_weight": [1, 3, 5],
+    }
+    base_model = xgb.XGBClassifier(eval_metric="mlogloss", random_state=42)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    search = RandomizedSearchCV(
+        estimator=base_model,
+        param_distributions=param_dist,
+        n_iter=30,
+        scoring="accuracy",
+        cv=cv,
+        random_state=42,
+        n_jobs=-1,
+        verbose=1,
+    )
+    search.fit(X_train, y_train)
+    best_index = search.best_index_
+    # Collect per-fold scores for the best parameter combination
+    n_splits = cv.get_n_splits()
+    fold_scores = np.array([search.cv_results_[f"split{i}_test_score"][best_index] for i in range(n_splits)])
+    logger.info(f"Best params: {search.best_params_}")
+    logger.info(f"XGBoost 5-fold CV accuracy scores: {fold_scores}")
+    mean_cv = np.mean(fold_scores)
+    std_cv = np.std(fold_scores)
+    logger.info("Mean accuracy: {:.4f} (+/- {:.4f})".format(np.mean(fold_scores), np.std(fold_scores)))
+    return search.best_estimator_, search.best_params_, mean_cv, std_cv
+
 
 async def prepare_variables():
-    load_dotenv('../.env')  # Load environment variables from .env file
+    load_dotenv()  # Load environment variables from .env file
     
     logger.info(os.getenv("ENV_PATH"))
-    backend_store_uri = os.getenv('MLFLOW_BACKEND_STORE_URI', 'sqlite:///mlflow.db')  # Fallback to local
-    artifact_uri = os.getenv('MLFLOW_ARTIFACT_URI', './mlruns')  # Fallback to local
+    backend_store_uri = get_required_env('MLFLOW_BACKEND_STORE_URI')
+    artifact_uri = get_required_env('MLFLOW_ARTIFACT_URI')
 
     logger.info(f"Backend Store: {backend_store_uri.split('@')[0]}...")  # Don't print password
     logger.info(f"Artifact Store: {artifact_uri}")
@@ -40,7 +80,6 @@ async def prepare_variables():
     return backend_store_uri, artifact_uri
     
 async def setup_and_test_mlflow_connection(backend_store_uri: str):
-    # Set tracking URI
     mlflow.set_tracking_uri(backend_store_uri)
     logger.info(f"MLflow Tracking URI set to: {mlflow.get_tracking_uri()}")
     # Test connection
@@ -49,102 +88,143 @@ async def setup_and_test_mlflow_connection(backend_store_uri: str):
         logger.info("✓ Successfully connected to MLflow backend")
     except Exception as e:
         logger.error(f"✗ Connection failed: {e}")
-        logger.info("Falling back to local SQLite")
+        raise ValueError(f"✗ Connection failed: {e}")
         
 async def load_data_fromdb(database_engine) -> pd.DataFrame:
-    data = database_engine.get_records(table_name="training_data_labeled")
+    if not (training_table_name := os.getenv("LABELED_TRAINING_DATA_TABLE_NAME")):
+        raise ValueError("Training Table name not set in the variable LABELED_TRAINING_DATA_TABLE_NAME")
+    data = database_engine.get_records(table_name=training_table_name)
     logger.info(f"Loaded {len(data)} rows from database")
     logger.info(f"Total columns: {len(data.columns)}")
     
     return data
 
-async def prepare_data_for_training(X: pd.DataFrame, y: pd.Series):
-    logger.info(f"\nFeature count: {X.shape[1]}")
-    logger.info(f"Classes: {y.unique()}")
-    logger.info(f"Class distribution:\n{y.value_counts()}")
+async def prepare_data_for_training(data: pd.DataFrame):
+    logger.info(f"\nFeature count: {data.shape[1] - 1}")
+    logger.info(f"Classes: {data["Activity"].unique()}")
+    logger.info(f"Class distribution:\n{data["Activity"].value_counts()}")
+    
+    # Remove problematic columns
+    remove_problematic_columns = await drop_columns_with_too_much_importance(data)
 
+    # Balance classes to avoid class inbalance lol
+    balanced_data = await balance_classes(data=remove_problematic_columns,method='cap_at_median')
+
+    # Scale user data to match Kaggle range [-1, 1]
+    logger.info("Scaling user data to [-1, 1] range to match Kaggle distribution...")
+    # # Create a temporary directory for artifacts
+    # temp_dir = tempfile.mkdtemp()
+    # scaler_path = os.path.join(temp_dir, "scaler.pkl")
+    try:
+        numeric_cols = balanced_data.select_dtypes(include=['number']).columns
+        cols_to_scale = [c for c in numeric_cols if c not in ['timestamp', 'Activity', 'label', 'subject', 'Subject']]
+        scaler = MinMaxScaler(feature_range=(-1, 1))
+        balanced_data[cols_to_scale] = scaler.fit_transform(balanced_data[cols_to_scale])
+
+    except Exception as e:
+        logger.error(f"Scaling failed: {e}")
+        raise e
+
+    X = balanced_data.drop(["Activity", "timestamp"], axis=1)
+    y = balanced_data["Activity"]
     # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
-
-    # Encode labels
+    #Encoding Labels
     label_encoder = LabelEncoder()
     y_train_encoded = label_encoder.fit_transform(y_train)
     y_test_encoded = label_encoder.transform(y_test)
 
     print(f"\nTrain size: {len(X_train)}, Test size: {len(X_test)}")
     print(f"Label mapping: {dict(zip(label_encoder.classes_, label_encoder.transform(label_encoder.classes_)))}")
-    
-    return X_train, X_test, y_train_encoded, y_test_encoded, label_encoder
 
-async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_path: str = None):
+    return X_train, X_test, y_train_encoded, y_test_encoded, label_encoder, scaler
+
+async def save_ml_artifacts_to_file(**artifacts):
+    """
+    Saves arbitrary ML objects to a specified directory.
+    Example: save_ml_artifacts(scaler=my_scaler, encoder=my_le)
+    """
+    temp_dir = Path.cwd() / "temp_artifact_store"
+    temp_dir.mkdir(exist_ok=True)
+
+    logger.info(f"Saving to {temp_dir}")
+
+    saved_files = []
+    for name, obj in artifacts.items():
+        # Construct filename: e.g., "scaler.joblib"
+        file_path = temp_dir / f"{name}.pkl"
+        try:
+            joblib.dump(obj, file_path)
+            logger.info(f"Successfully saved artifact: {file_path}")
+            saved_files.append(file_path)
+        except Exception as e:
+            logger.error(f"Failed to save {name}: {e}")
+            raise
+
+    return saved_files, temp_dir
+
+
+async def run_ml_flow_experiment(artifact_uri: str,
+    training_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    training_labels_df: pd.DataFrame,
+    test_labels_df: pd.DataFrame,
+    scaler = None,
+    label_encoder= None):
     
     # Train XGBoost and register with MLflow
     print(f"Using artifact URI: {artifact_uri}")
-    X = data.drop(["Activity", "timestamp"], axis=1)
-    y = data["Activity"]
-
-    X_train, X_test, y_train_encoded, y_test_encoded, label_encoder = await prepare_data_for_training(X, y)
-    # Set experiment with artifact location
-    experiment = mlflow.set_experiment("Merito_HAR_Production_Models")
+    EXPERIMENT_NAME = "har-xgboost"
+    try:
+        experiment_id = mlflow.create_experiment(
+            EXPERIMENT_NAME,
+            artifact_location=artifact_uri
+        )
+        mlflow.set_experiment(EXPERIMENT_NAME)
+        print(f"✓ Created new experiment with artifact location: {artifact_uri}")
+    except:
+        try:
+            # If experiment already exists, just set it
+            experiment = mlflow.set_experiment(EXPERIMENT_NAME)
+        except:
+            message = "Failed to create or set experiment"
+            logger.error(message)
+            raise ValueError(message)
     logger.info(f"Experiment artifact location: {experiment.artifact_location}")
 
-    # If experiment artifact location is local, we need to create a new experiment or update it
     if not experiment.artifact_location.startswith(('wasbs://', 'wasb://', 's3://', 'gs://')):
-        logger.warning(f"⚠️  Experiment is using local storage: {experiment.artifact_location}")
-        logger.info("Creating a new experiment with Azure Blob Storage...")
-        
-        # Create a new experiment with the correct artifact location
-        try:
-            experiment_id = mlflow.create_experiment(
-                "HAR_Production_Models",
-                artifact_location=artifact_uri
-            )
-            mlflow.set_experiment("HAR_Production_Models")
-            print(f"✓ Created new experiment with artifact location: {artifact_uri}")
-        except:
-            # If experiment already exists, just set it
-            mlflow.set_experiment("HAR_Production_Models")
-    with mlflow.start_run(run_name="XGBoost_180_features") as run:
-        # Log scaler if provided
-        if scaler_path and os.path.exists(scaler_path):
-            mlflow.log_artifact(scaler_path)
+        message = "Unsupported artifact location"
+        logger.error(message)
+        raise ValueError(message)
 
-        # Save and log label encoder
-        label_encoder_path = os.path.join(os.path.dirname(scaler_path), "label_encoder.pkl")
-        joblib.dump(label_encoder, label_encoder_path)
-        mlflow.log_artifact(label_encoder_path)
-        logger.info(f"Label encoder saved and logged to MLflow")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{EXPERIMENT_NAME}-{timestamp}"
+    with mlflow.start_run(run_name=run_name) as run:
 
-        # Train model
-        model = xgb.XGBClassifier(
-            eval_metric='mlogloss',
-            random_state=42,
-            n_estimators=100,
-            max_depth=6,
-            learning_rate=0.3
+        ml_artifacts_file_paths, artifacts_directory = await save_ml_artifacts_to_file(
+            scaler=scaler,
+            label_encoder=label_encoder
         )
-        model.fit(X_train, y_train_encoded)
-        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        xgb_cv_scores = cross_val_score(model, X_train, y_train_encoded, cv=cv, scoring='accuracy')
-        logger.info("XGBoost 5-fold CV accuracy scores:", xgb_cv_scores)
-        logger.info("Mean accuracy: {:.4f} (+/- {:.4f})".format(np.mean(xgb_cv_scores), np.std(xgb_cv_scores)))
+        for artifact_file_path in ml_artifacts_file_paths:
+            mlflow.log_artifact(artifact_file_path)
+        shutil.rmtree(artifacts_directory)
+        logger.info("Folder and all contents deleted.")
+        # Train model with hyperparameters tuning
+        model, best_params, mean_cv, std_cv = find_best_model(training_df, training_labels_df)
         # Evaluate
-        y_pred_encoded = model.predict(X_test)
+        y_pred_encoded = model.predict(test_df)
         y_pred = label_encoder.inverse_transform(y_pred_encoded)
-        
-        y_test = label_encoder.inverse_transform(y_test_encoded)
-        
-        accuracy = model.score(X_test, y_test_encoded)
-        
+        y_test = label_encoder.inverse_transform(test_labels_df)
+
+        accuracy = model.score(test_df, test_labels_df)        
         conf_matrix = confusion_matrix(y_test, y_pred)
-        
         classification_rep = classification_report(y_test, y_pred)
-        
+
         # Log metrics
         mlflow.log_metric("accuracy", accuracy)
-        mlflow.log_param("n_features", X.shape[1])
+        mlflow.log_param("n_features", training_df.shape[1])
         mlflow.log_param("n_classes", len(label_encoder.classes_))
         mlflow.log_param("confusion matrix", conf_matrix.tolist())
         conf_matrix_df = pd.DataFrame(
@@ -166,18 +246,18 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_p
         mlflow.log_figure(fig, "confusion_matrix.png")
         plt.close(fig)
         mlflow.log_param("classification report", classification_rep)
-        mlflow.log_param("cv_accuracy_mean", np.mean(xgb_cv_scores))
-        mlflow.log_param("cv_accuracy_std", np.std(xgb_cv_scores))
+        mlflow.log_param("cv_accuracy_mean", mean_cv)
+        mlflow.log_param("cv_accuracy_std", std_cv)
         
         # Log model with signature (will be saved to Azure Blob)
         from mlflow.models.signature import infer_signature
-        signature = infer_signature(X_train, model.predict(X_train))
+        signature = infer_signature(training_df, model.predict(training_df))
         
         mlflow.xgboost.log_model(
             model,
             artifact_path="model",
             signature=signature,
-            registered_model_name="HAR_xgboost"
+            registered_model_name=EXPERIMENT_NAME
         )
         
         print(f"\n=== XGBoost Model Training Complete ===")
@@ -185,7 +265,7 @@ async def run_ml_flow_experiment(artifact_uri: str, data: pd.DataFrame, scaler_p
         print(f"\nClassification Report:")
         print(classification_report(y_test, y_pred))
         print(f"\nRun ID: {run.info.run_id}")
-        print(f"Model registered as: HAR_xgboost")
+        print(f"Model registered as: {EXPERIMENT_NAME}")
         print(f"Artifacts stored at: {run.info.artifact_uri}")
 
 async def load_kaggle_data_fromdb(database_engine: DatabaseEngine, columns: list) -> pd.DataFrame:
@@ -263,43 +343,18 @@ async def train_model_async(db_engine: DatabaseEngine):
     backend_store_uri, artifact_uri = await prepare_variables()
     await setup_and_test_mlflow_connection(backend_store_uri)
     data = await load_data_fromdb(db_engine)
-    remove_problematic_columns = await drop_columns_with_too_much_importance(data)
-    balanced_data = await balance_classes(data=remove_problematic_columns,method='cap_at_median')
-    # Scale user data to match Kaggle range [-1, 1]
-    logger.info("Scaling user data to [-1, 1] range to match Kaggle distribution...")
-    
-    # Create a temporary directory for artifacts
-    temp_dir = tempfile.mkdtemp()
-    scaler_path = os.path.join(temp_dir, "scaler.pkl")
-    
+    X_train, X_test, y_train_encoded, y_test_encoded, label_encoder, scaler = await prepare_data_for_training(data)
     try:
-        numeric_cols = balanced_data.select_dtypes(include=['number']).columns
-        # cols_to_exclude = ['timestamp', 'Activity', 'label', 'subject']
-        # flexible exclusion
-        cols_to_scale = [c for c in numeric_cols if c not in ['timestamp', 'Activity', 'label', 'subject', 'Subject']]
-        
-        scaler = MinMaxScaler(feature_range=(-1, 1))
-        balanced_data[cols_to_scale] = scaler.fit_transform(balanced_data[cols_to_scale])
-        
-        # Save scaler to temp file
-        joblib.dump(scaler, scaler_path)
-        logger.info(f"Scaler temporarily saved to {scaler_path}")
-    except Exception as e:
-        logger.error(f"Scaling failed: {e}")
-        shutil.rmtree(temp_dir)
-        raise e
-
-    columns = list(balanced_data.columns.drop(["timestamp"]))
-    # kaggle_data = await load_kaggle_data_fromdb(db_engine, columns)
-    
-    combined_data = balanced_data  # pd.concat([data, kaggle_data], ignore_index=True)
-    print(f"Combined data shape: {combined_data.shape}")
-    
-    try:
-        await run_ml_flow_experiment(artifact_uri, combined_data, scaler_path=scaler_path)
+        await run_ml_flow_experiment(artifact_uri=artifact_uri,
+         training_df=X_train,
+         test_df=X_test,
+         training_labels_df=y_train_encoded,
+         test_labels_df=y_test_encoded,
+         scaler=scaler,
+         label_encoder=label_encoder)
     finally:
         # Cleanup temp dir
-        shutil.rmtree(temp_dir)
+        logger.info("FInished ML FLOW Experiment run")
 
 
 
