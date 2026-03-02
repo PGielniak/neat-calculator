@@ -1,25 +1,23 @@
 # Configure MLflow with PostgreSQL + Azure Blob Storage
 import os
-from venv import logger
+import sys
+import shutil
+import logging
+from pathlib import Path
+from datetime import datetime
+
 from dotenv import load_dotenv
 import mlflow
-import sys
-from pathlib import Path
+import mlflow.xgboost
 import pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold, RandomizedSearchCV
+import joblib
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
-import matplotlib.pyplot as plt
-import joblib
-import tempfile
-import shutil
-import os
-import mlflow.xgboost
-import logging
 from database.database_utils import DatabaseEngine, get_postgres_db_engine
-import numpy as np
-from datetime import datetime
 
 #TODO refactor into smaller parametrzed functions
 
@@ -70,7 +68,7 @@ def find_best_model(X_train, y_train):
 async def prepare_variables():
     load_dotenv()  # Load environment variables from .env file
     
-    logger.info(os.getenv("ENV_PATH"))
+    logger.info(f"ENV_PATH: {os.getenv('ENV_PATH') or '(not set)'}")
     backend_store_uri = get_required_env('MLFLOW_BACKEND_STORE_URI')
     artifact_uri = get_required_env('MLFLOW_ARTIFACT_URI')
 
@@ -94,13 +92,19 @@ async def load_data_fromdb(database_engine) -> pd.DataFrame:
     if not (training_table_name := os.getenv("LABELED_TRAINING_DATA_TABLE_NAME")):
         raise ValueError("Training Table name not set in the variable LABELED_TRAINING_DATA_TABLE_NAME")
     data = database_engine.get_records(table_name=training_table_name)
-    logger.info(f"Loaded {len(data)} rows from database")
-    logger.info(f"Total columns: {len(data.columns)}")
+    if data.empty:
+        raise ValueError(f"No data returned from table '{training_table_name}' — cannot train on an empty dataset")
+    logger.info(f"Loaded {len(data)} rows and {len(data.columns)} columns from table '{training_table_name}'")
     
     return data
 
 async def prepare_data_for_training(data: pd.DataFrame):
-    logger.info(f"\nFeature count: {data.shape[1] - 1}")
+    if data.empty:
+        raise ValueError("Cannot prepare training data: input DataFrame is empty")
+    if "Activity" not in data.columns:
+        raise ValueError(f"'Activity' column not found. Available columns: {data.columns.tolist()}")
+
+    logger.info(f"Feature count: {data.shape[1] - 1}")
     logger.info(f"Classes: {data["Activity"].unique()}")
     logger.info(f"Class distribution:\n{data["Activity"].value_counts()}")
     
@@ -136,8 +140,8 @@ async def prepare_data_for_training(data: pd.DataFrame):
     y_train_encoded = label_encoder.fit_transform(y_train)
     y_test_encoded = label_encoder.transform(y_test)
 
-    print(f"\nTrain size: {len(X_train)}, Test size: {len(X_test)}")
-    print(f"Label mapping: {dict(zip(label_encoder.classes_, label_encoder.transform(label_encoder.classes_)))}")
+    logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
+    logger.info(f"Label mapping: {dict(zip(label_encoder.classes_, label_encoder.transform(label_encoder.classes_)))}")
 
     return X_train, X_test, y_train_encoded, y_test_encoded, label_encoder, scaler
 
@@ -175,23 +179,23 @@ async def run_ml_flow_experiment(artifact_uri: str,
     label_encoder= None):
     
     # Train XGBoost and register with MLflow
-    print(f"Using artifact URI: {artifact_uri}")
+    logger.info(f"Using artifact URI: {artifact_uri}")
     EXPERIMENT_NAME = "har-xgboost"
     try:
         experiment_id = mlflow.create_experiment(
             EXPERIMENT_NAME,
             artifact_location=artifact_uri
         )
-        mlflow.set_experiment(EXPERIMENT_NAME)
-        print(f"✓ Created new experiment with artifact location: {artifact_uri}")
-    except:
+        experiment = mlflow.get_experiment(experiment_id)
+        logger.info(f"Created new experiment '{EXPERIMENT_NAME}' with artifact location: {artifact_uri}")
+    except mlflow.exceptions.MlflowException:
         try:
             # If experiment already exists, just set it
             experiment = mlflow.set_experiment(EXPERIMENT_NAME)
-        except:
-            message = "Failed to create or set experiment"
+        except mlflow.exceptions.MlflowException as e:
+            message = f"Failed to create or set MLflow experiment '{EXPERIMENT_NAME}': {e}"
             logger.error(message)
-            raise ValueError(message)
+            raise ValueError(message) from e
     logger.info(f"Experiment artifact location: {experiment.artifact_location}")
 
     if not experiment.artifact_location.startswith(('wasbs://', 'wasb://', 's3://', 'gs://')):
@@ -260,22 +264,24 @@ async def run_ml_flow_experiment(artifact_uri: str,
             registered_model_name=EXPERIMENT_NAME
         )
         
-        print(f"\n=== XGBoost Model Training Complete ===")
-        print(f"Accuracy: {accuracy:.4f}")
-        print(f"\nClassification Report:")
-        print(classification_report(y_test, y_pred))
-        print(f"\nRun ID: {run.info.run_id}")
-        print(f"Model registered as: {EXPERIMENT_NAME}")
-        print(f"Artifacts stored at: {run.info.artifact_uri}")
+        logger.info(f"\n=== XGBoost Model Training Complete ===")
+        logger.info(f"Accuracy: {accuracy:.4f}")
+        logger.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
+        logger.info(f"Run ID: {run.info.run_id}")
+        logger.info(f"Model registered as: {EXPERIMENT_NAME}")
+        logger.info(f"Artifacts stored at: {run.info.artifact_uri}")
 
 async def load_kaggle_data_fromdb(database_engine: DatabaseEngine, columns: list) -> pd.DataFrame:
     data = database_engine.get_records(table_name="kaggle_train_data", columns=columns)
-    print(f"Loaded {len(data)} rows from database")
-    print(f"Total columns: {len(data.columns)}")
+    logger.info(f"Loaded {len(data)} rows and {len(data.columns)} columns from 'kaggle_train_data'")
     
     return data
 
 async def balance_classes(data: pd.DataFrame, method: str = 'least_represented') -> pd.DataFrame:
+    if data.empty:
+        raise ValueError("Cannot balance classes: input DataFrame is empty")
+    if "Activity" not in data.columns:
+        raise ValueError(f"'Activity' column not found — cannot balance classes. Available: {data.columns.tolist()}")
     logger.info("Balancing classes by undersampling the majority class...")
     class_counts = data["Activity"].value_counts()
     logger.info(f"Original class distribution:\n{class_counts}")
@@ -324,6 +330,8 @@ async def balance_classes(data: pd.DataFrame, method: str = 'least_represented')
 
 
 async def drop_columns_with_too_much_importance(df: pd.DataFrame):
+    if df.empty:
+        raise ValueError("Cannot drop columns: input DataFrame is empty")
     to_drop_patterns = ['angle', 'tGravityAcc-X', 'tGravityAcc-Y', 'tGravityAcc-Z', 
                     'tBodyAcc-X', 'tBodyAcc-Y', 'tBodyAcc-Z',
                     'fBodyAcc-X', 'fBodyAcc-Y', 'fBodyAcc-Z']
@@ -354,7 +362,7 @@ async def train_model_async(db_engine: DatabaseEngine):
          label_encoder=label_encoder)
     finally:
         # Cleanup temp dir
-        logger.info("FInished ML FLOW Experiment run")
+        logger.info("Finished MLflow experiment run")
 
 
 
