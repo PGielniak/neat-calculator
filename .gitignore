@@ -31,6 +31,7 @@ pyvenv.cfg
 .coverage
 coverage.xml
 htmlcov/
+test_reports/
 
 # ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
