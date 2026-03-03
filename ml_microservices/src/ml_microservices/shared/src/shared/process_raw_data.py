@@ -2,6 +2,7 @@
 
 import hashlib
 import uuid
+import importlib.resources
 import pandas as pd
 import os
 import json
@@ -12,6 +13,7 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from shared.helper_functions import extract_features
 
+_KAGGLE_CSV_PATH = str(importlib.resources.files("shared").joinpath("kaggle.csv"))
 
 # Configure logger
 logging.basicConfig(
@@ -41,7 +43,7 @@ sensor_cols = [
     ]
 
 
-def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str, skipped_files: List[str]=[], labels_csv_path = None, version: str = '2') -> pd.DataFrame:
+def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str = "", skipped_files: List[str]=[], labels_csv_path = None, version: str = '2') -> pd.DataFrame:
     """
     Process raw sensor data files from the specified directory and return a DataFrame
     containing the extracted features and labels.
@@ -51,6 +53,8 @@ def process_raw_sensor_data(raw_data_file_dir: str, kaggle_csv_path: str, skippe
     logger.info(f"Starting processing of raw data in directory: {raw_data_file_dir}")
     logger.info(f"Using labels from: {labels_csv_path}")
 
+    if not kaggle_csv_path:
+        kaggle_csv_path = _KAGGLE_CSV_PATH
     merged_data = merge_json_files(raw_data_file_dir, skipped_files=skipped_files)
     
     
@@ -205,7 +209,7 @@ def label_data_v2(data: list[SensorRecording], labels_csv_path: str) -> pd.DataF
     sensor_data_df = pd.DataFrame(data)
     sensor_data_df.sort_values(by=['timestamp'], inplace=True)
     
-    labels_df = pd.read_csv(labels_csv_path)
+    labels_df = pd.read_csv(labels_csv_path, encoding='utf-8-sig')
     
     sensor_data_df['label'] = None
 
