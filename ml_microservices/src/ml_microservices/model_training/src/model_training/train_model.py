@@ -30,16 +30,28 @@ def get_required_env(key: str) -> str:
     return value
 
 
-def find_best_model(X_train, y_train):
-    param_dist = {
-        "n_estimators": [100, 200, 300, 500],
-        "max_depth": [3, 4, 6, 8, 10],
-        "learning_rate": [0.01, 0.05, 0.1, 0.2, 0.3],
-        "subsample": [0.6, 0.8, 1.0],
-        "colsample_bytree": [0.6, 0.8, 1.0],
-        "gamma": [0, 0.1, 0.3, 0.5],
-        "min_child_weight": [1, 3, 5],
-    }
+def find_best_model(X_train, y_train, random_search_cv: bool=True):
+
+    if random_search_cv:
+        param_dist = {
+            "n_estimators": [100, 200, 300, 500],
+            "max_depth": [3, 4, 6, 8, 10],
+            "learning_rate": [0.01, 0.05, 0.1, 0.2, 0.3],
+            "subsample": [0.6, 0.8, 1.0],
+            "colsample_bytree": [0.6, 0.8, 1.0],
+            "gamma": [0, 0.1, 0.3, 0.5],
+            "min_child_weight": [1, 3, 5],
+        }
+    else:
+        param_dist = {
+        "n_estimators": [300],
+        "max_depth": [4],
+        "learning_rate": [0.05],
+        "subsample": [0.8],
+        "colsample_bytree": [0.6],
+        "gamma": [0.3],
+        "min_child_weight": [5],
+        }
     base_model = xgb.XGBClassifier(eval_metric="mlogloss", random_state=42)
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     search = RandomizedSearchCV(
@@ -62,7 +74,8 @@ def find_best_model(X_train, y_train):
     mean_cv = np.mean(fold_scores)
     std_cv = np.std(fold_scores)
     logger.info("Mean accuracy: {:.4f} (+/- {:.4f})".format(np.mean(fold_scores), np.std(fold_scores)))
-    return search.best_estimator_, search.best_params_, mean_cv, std_cv
+    column_names = X_train.columns
+    return search.best_estimator_, search.best_params_, mean_cv, std_cv, column_names
 
 
 async def prepare_variables():
@@ -112,8 +125,7 @@ async def prepare_data_for_training(data: pd.DataFrame):
     remove_problematic_columns = await drop_columns_with_too_much_importance(data)
 
     # Balance classes to avoid class inbalance lol
-    balanced_data = await balance_classes(data=remove_problematic_columns,method='cap_at_median')
-
+    balanced_data = await balance_classes(data=remove_problematic_columns,method='undersample_highest')
     # Scale user data to match Kaggle range [-1, 1]
     logger.info("Scaling user data to [-1, 1] range to match Kaggle distribution...")
     # # Create a temporary directory for artifacts
@@ -216,7 +228,7 @@ async def run_ml_flow_experiment(artifact_uri: str,
         shutil.rmtree(artifacts_directory)
         logger.info("Folder and all contents deleted.")
         # Train model with hyperparameters tuning
-        model, best_params, mean_cv, std_cv = find_best_model(training_df, training_labels_df)
+        model, best_params, mean_cv, std_cv, column_names = find_best_model(training_df, training_labels_df, False)
         # Evaluate
         y_pred_encoded = model.predict(test_df)
         y_pred = label_encoder.inverse_transform(y_pred_encoded)
@@ -225,12 +237,28 @@ async def run_ml_flow_experiment(artifact_uri: str,
         accuracy = model.score(test_df, test_labels_df)        
         conf_matrix = confusion_matrix(y_test, y_pred)
         classification_rep = classification_report(y_test, y_pred)
-
+        data_with_labels = training_df.copy()
+        data_with_labels["Activity"] = label_encoder.inverse_transform(training_labels_df)
+        labels_value_counts = data_with_labels["Activity"].value_counts()
+        
+        importances = model.feature_importances_
+        feature_imp_df = pd.DataFrame({'Feature': column_names, 'Importance': importances})
+        feature_imp_df = feature_imp_df.sort_values(by='Importance', ascending=False).head(20)
+        logger.info(f"Feature importances: {importances}")
+        fig_feature_imp = plt.figure(figsize=(10, 10))
+        plt.barh(feature_imp_df['Feature'], feature_imp_df['Importance'], color='skyblue')
+        plt.xlabel('Importance Score')
+        plt.title('Top 20 XGBoost Feature Importances')
+        plt.gca().invert_yaxis()
+        plt.tight_layout()
+        mlflow.log_figure(fig_feature_imp, "feature_importance.png")
         # Log metrics
         mlflow.log_metric("accuracy", accuracy)
         mlflow.log_param("n_features", training_df.shape[1])
         mlflow.log_param("n_classes", len(label_encoder.classes_))
         mlflow.log_param("confusion matrix", conf_matrix.tolist())
+        mlflow.log_param("best parameters", best_params)
+        mlflow.log_param("value_counts", labels_value_counts)
         conf_matrix_df = pd.DataFrame(
             conf_matrix,
             index=label_encoder.classes_,
@@ -322,6 +350,13 @@ async def balance_classes(data: pd.DataFrame, method: str = 'least_represented')
         
         combined_data = pd.concat([above_median_sampled, below_median_unsampled], ignore_index=True)
         balanced_data = combined_data.sample(frac=1, random_state=42).reset_index(drop=True)
+    elif method == 'undersample_highest':
+        data_without_highest = data[data["Activity"] != majority_class]
+        dwh_class_counts = data_without_highest["Activity"].value_counts()
+        new_majority_class = dwh_class_counts.idxmax()
+        majority = data[data["Activity"] == majority_class]
+        df_majority_capped = majority.sample(n=dwh_class_counts[new_majority_class], random_state=42)
+        balanced_data = pd.concat([data_without_highest, df_majority_capped], ignore_index=True)
     else:
         logger.error(f"Unknown balancing method: {method}. No balancing applied.")
         balanced_data = data
