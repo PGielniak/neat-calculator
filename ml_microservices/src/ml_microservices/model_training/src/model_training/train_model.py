@@ -16,6 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split, StratifiedKFold, RandomizedSearchCV
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 from database.database_utils import DatabaseEngine, get_postgres_db_engine
 
@@ -30,51 +31,107 @@ def get_required_env(key: str) -> str:
     return value
 
 
-def find_best_model(X_train, y_train, random_search_cv: bool=True):
+def find_best_model(X_train, y_train, algorithm: str = 'random_forest', random_search_cv: bool=True):
 
-    if random_search_cv:
-        param_dist = {
-            "n_estimators": [100, 200, 300, 500],
-            "max_depth": [3, 4, 6, 8, 10],
-            "learning_rate": [0.01, 0.05, 0.1, 0.2, 0.3],
-            "subsample": [0.6, 0.8, 1.0],
-            "colsample_bytree": [0.6, 0.8, 1.0],
-            "gamma": [0, 0.1, 0.3, 0.5],
-            "min_child_weight": [1, 3, 5],
-        }
-    else:
-        param_dist = {
-        "n_estimators": [300],
-        "max_depth": [4],
-        "learning_rate": [0.05],
-        "subsample": [0.8],
-        "colsample_bytree": [0.6],
-        "gamma": [0.3],
-        "min_child_weight": [5],
-        }
-    base_model = xgb.XGBClassifier(eval_metric="mlogloss", random_state=42)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    search = RandomizedSearchCV(
-        estimator=base_model,
-        param_distributions=param_dist,
-        n_iter=30,
-        scoring="accuracy",
-        cv=cv,
-        random_state=42,
-        n_jobs=-1,
-        verbose=1,
-    )
-    search.fit(X_train, y_train)
-    best_index = search.best_index_
-    # Collect per-fold scores for the best parameter combination
-    n_splits = cv.get_n_splits()
-    fold_scores = np.array([search.cv_results_[f"split{i}_test_score"][best_index] for i in range(n_splits)])
-    logger.info(f"Best params: {search.best_params_}")
-    logger.info(f"XGBoost 5-fold CV accuracy scores: {fold_scores}")
-    mean_cv = np.mean(fold_scores)
-    std_cv = np.std(fold_scores)
-    logger.info("Mean accuracy: {:.4f} (+/- {:.4f})".format(np.mean(fold_scores), np.std(fold_scores)))
-    column_names = X_train.columns
+    if algorithm == 'xgb':
+        if random_search_cv:
+            param_dist = {
+                "n_estimators": [100, 200, 300, 500],
+                "max_depth": [3, 4, 6, 8, 10],
+                "learning_rate": [0.01, 0.05, 0.1, 0.2, 0.3],
+                "subsample": [0.6, 0.8, 1.0],
+                "colsample_bytree": [0.6, 0.8, 1.0],
+                "gamma": [0, 0.1, 0.3, 0.5],
+                "min_child_weight": [1, 3, 5],
+            }
+        else:
+            param_dist = {
+            "n_estimators": [300],
+            "max_depth": [4],
+            "learning_rate": [0.05],
+            "subsample": [0.8],
+            "colsample_bytree": [0.6],
+            "gamma": [0.3],
+            "min_child_weight": [5],
+            }
+        base_model = xgb.XGBClassifier(eval_metric="mlogloss", random_state=42)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_dist,
+            n_iter=30,
+            scoring="accuracy",
+            cv=cv,
+            random_state=42,
+            n_jobs=-1,
+            verbose=1,
+        )
+        search.fit(X_train, y_train)
+        best_index = search.best_index_
+        # Collect per-fold scores for the best parameter combination
+        n_splits = cv.get_n_splits()
+        fold_scores = np.array([search.cv_results_[f"split{i}_test_score"][best_index] for i in range(n_splits)])
+        logger.info(f"Best params: {search.best_params_}")
+        logger.info(f"XGBoost 5-fold CV accuracy scores: {fold_scores}")
+        mean_cv = np.mean(fold_scores)
+        std_cv = np.std(fold_scores)
+        logger.info("Mean accuracy: {:.4f} (+/- {:.4f})".format(np.mean(fold_scores), np.std(fold_scores)))
+        column_names = X_train.columns
+    
+    if algorithm == 'random_forest':
+        if random_search_cv:
+            param_dist = {
+                "n_estimators": [100, 200, 300, 500],
+                "max_depth": [10, 15, 20, 30, None],
+                "max_features": ["sqrt", "log2", 0.3], # Crucial for forcing feature variety
+                "min_samples_split": [2, 5, 10],
+                "min_samples_leaf": [1, 2, 4],
+                "bootstrap": [True],
+                "class_weight": ["balanced", "balanced_subsample"]
+            }
+        else:
+            param_dist = {
+                "n_estimators": [300],
+                "max_depth": [15],
+                "max_features": ["sqrt"],
+                "min_samples_split": [5],
+                "min_samples_leaf": [2],
+                "bootstrap": [True],
+                "class_weight": ["balanced"]
+            }
+
+        # Initialize Base Model
+        base_model = RandomForestClassifier(random_state=42)
+        
+        # 5-fold Stratified CV
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        
+        # Setup RandomizedSearchCV
+        search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_dist,
+            n_iter=30,
+            scoring="accuracy",
+            cv=cv,
+            random_state=42,
+            n_jobs=-1,
+            verbose=1,
+        )
+    
+        search.fit(X_train, y_train)
+        
+        # Extract Metrics
+        best_index = search.best_index_
+        n_splits = cv.get_n_splits()
+        fold_scores = np.array([search.cv_results_[f"split{i}_test_score"][best_index] for i in range(n_splits)])
+        
+        mean_cv = np.mean(fold_scores)
+        std_cv = np.std(fold_scores)
+        column_names = X_train.columns
+
+        logger.info(f"Best RF params: {search.best_params_}")
+        logger.info(f"Mean accuracy: {mean_cv:.4f} (+/- {std_cv:.4f})")
+
     return search.best_estimator_, search.best_params_, mean_cv, std_cv, column_names
 
 
@@ -122,10 +179,10 @@ async def prepare_data_for_training(data: pd.DataFrame):
     logger.info(f"Class distribution:\n{data["Activity"].value_counts()}")
     
     # Remove problematic columns
-    remove_problematic_columns = await drop_columns_with_too_much_importance(data)
-
+    #remove_problematic_columns = await drop_columns_with_too_much_importance(data)
+    
     # Balance classes to avoid class inbalance lol
-    balanced_data = await balance_classes(data=remove_problematic_columns,method='undersample_highest')
+    balanced_data = await balance_classes(data=data,method='cap_stairs')
     # Scale user data to match Kaggle range [-1, 1]
     logger.info("Scaling user data to [-1, 1] range to match Kaggle distribution...")
     # # Create a temporary directory for artifacts
@@ -188,11 +245,15 @@ async def run_ml_flow_experiment(artifact_uri: str,
     training_labels_df: pd.DataFrame,
     test_labels_df: pd.DataFrame,
     scaler = None,
-    label_encoder= None):
+    label_encoder= None,
+    algorithm="random_forest"):
     
     # Train XGBoost and register with MLflow
     logger.info(f"Using artifact URI: {artifact_uri}")
-    EXPERIMENT_NAME = "har-xgboost"
+    if algorithm == "xgboost":
+        EXPERIMENT_NAME = "har-xgboost01"
+    if algorithm == "random_forest":
+        EXPERIMENT_NAME = "har-randomforest01"
     try:
         experiment_id = mlflow.create_experiment(
             EXPERIMENT_NAME,
@@ -228,7 +289,7 @@ async def run_ml_flow_experiment(artifact_uri: str,
         shutil.rmtree(artifacts_directory)
         logger.info("Folder and all contents deleted.")
         # Train model with hyperparameters tuning
-        model, best_params, mean_cv, std_cv, column_names = find_best_model(training_df, training_labels_df, False)
+        model, best_params, mean_cv, std_cv, column_names = find_best_model(training_df, training_labels_df, 'random_forest', True)
         # Evaluate
         y_pred_encoded = model.predict(test_df)
         y_pred = label_encoder.inverse_transform(y_pred_encoded)
@@ -285,14 +346,25 @@ async def run_ml_flow_experiment(artifact_uri: str,
         from mlflow.models.signature import infer_signature
         signature = infer_signature(training_df, model.predict(training_df))
         
-        mlflow.xgboost.log_model(
-            model,
-            artifact_path="model",
-            signature=signature,
-            registered_model_name=EXPERIMENT_NAME
-        )
-        
-        logger.info(f"\n=== XGBoost Model Training Complete ===")
+        if algorithm == "xgboost":
+            mlflow.xgboost.log_model(
+                model,
+                artifact_path="model",
+                signature=signature,
+                registered_model_name=EXPERIMENT_NAME
+            )
+            logger.info(f"\n=== XGBoost Model Training Complete ===")
+
+        if algorithm == "random_forest":
+            mlflow.sklearn.log_model(
+                sk_model=model,
+                artifact_path="model",
+                signature=signature,
+                registered_model_name=EXPERIMENT_NAME
+            )
+            logger.info(f"\n=== RandomForest Model Training Complete ===")
+
+
         logger.info(f"Accuracy: {accuracy:.4f}")
         logger.info(f"Classification Report:\n{classification_report(y_test, y_pred)}")
         logger.info(f"Run ID: {run.info.run_id}")
@@ -357,6 +429,30 @@ async def balance_classes(data: pd.DataFrame, method: str = 'least_represented')
         majority = data[data["Activity"] == majority_class]
         df_majority_capped = majority.sample(n=dwh_class_counts[new_majority_class], random_state=42)
         balanced_data = pd.concat([data_without_highest, df_majority_capped], ignore_index=True)
+    elif method == 'cap_stairs':
+        # 1. Identify how much walking data you actually have
+        walking_count = len(data[data["Activity"] == "WALKING"])
+        
+        # 2. Separate the classes
+        df_walking = data[data["Activity"] == "WALKING"]
+        df_up = data[data["Activity"] == "WALKING_UPSTAIRS"]
+        df_down = data[data["Activity"] == "WALKING_DOWNSTAIRS"]
+        df_static = data[data["Activity"].isin(["LAYING", "SITTING", "STANDING"])]
+        
+        # 3. Calculate half-cap to ensure Combined Stairs == Walking
+        # We divide by 2 so that Up + Down = Total Walking
+        half_cap = walking_count // 2
+        
+        # Ensure we don't try to sample more than we have for either stair type
+        up_cap = min(half_cap, len(df_up))
+        down_cap = min(half_cap, len(df_down))
+        
+        df_up_capped = df_up.sample(n=up_cap, random_state=42)
+        df_down_capped = df_down.sample(n=down_cap, random_state=42)
+        
+        # 4. Combine
+        # Result: Walking (~262) vs Total Stairs (~262)
+        balanced_data = pd.concat([df_walking, df_up_capped, df_down_capped, df_static], ignore_index=True)
     else:
         logger.error(f"Unknown balancing method: {method}. No balancing applied.")
         balanced_data = data

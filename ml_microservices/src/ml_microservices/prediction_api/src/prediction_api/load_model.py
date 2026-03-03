@@ -6,7 +6,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-def load_production_model(model_name, model_alias):
+def load_production_model(model_name, model_alias, algorithm='random_forest'):
     """
     Load the registered model by alias (e.g., 'production').
     Returns tuple: (model, scaler, label_encoder)
@@ -16,8 +16,10 @@ def load_production_model(model_name, model_alias):
 
     model_uri = f"models:/{model_name}@{model_alias}"
     logger.info(f"Loading model from MLflow URI: {model_uri}")
-
-    model = mlflow.xgboost.load_model(model_uri)
+    if algorithm == "xgboost":
+        model = mlflow.xgboost.load_model(model_uri)
+    if algorithm == "random_forest":
+        model = mlflow.sklearn.load_model(model_uri)
 
     scaler = None
     label_encoder = None

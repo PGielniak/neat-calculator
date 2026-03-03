@@ -86,7 +86,7 @@ async def handle_webhook(
     raw_data_storage_account_container_uri = payload.raw_data_storage_account_container_uri if payload.raw_data_storage_account_container_uri else ""
     labels_csv_path = payload.labels_csv_path if payload.labels_csv_path else ""
     labels_storage_account_blob_uri = payload.labels_storage_account_blob_uri if payload.labels_storage_account_blob_uri else ""
-    kaggle_csv_path = payload.kaggle_csv_path if payload.kaggle_csv_path else "kaggle.csv"
+    kaggle_csv_path = payload.kaggle_csv_path if payload.kaggle_csv_path else ""
     logger.info(f"Triggering data pipeline run: {pipeline_run_id} with payload: {payload} (debug={debug})")
 
     if debug:

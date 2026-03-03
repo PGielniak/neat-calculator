@@ -56,7 +56,7 @@ def save_to_db(data: Union[BaseModel, List[BaseModel], dict, List[dict], pd.Data
     Saves the given data to the specified database table.
     Handles both Pydantic models and dictionaries.
     """
-    from infra.db.database_utils import DatabaseRepository
+    from database.database_utils import DatabaseRepository
     
     repository = DatabaseRepository(db_engine)
     

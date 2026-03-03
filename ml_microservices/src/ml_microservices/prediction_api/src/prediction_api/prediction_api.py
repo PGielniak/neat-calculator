@@ -18,7 +18,7 @@ import importlib.resources
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-MODEL_NAME = os.getenv("MODEL_NAME", "har-xgboost")
+MODEL_NAME = os.getenv("MODEL_NAME", "har-randomforest01")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "production")
 
 model = None
@@ -98,6 +98,22 @@ def _load_models() -> None:
         logger.error(f"Could not load model: {e}")
     finally:
         _log_artifact_status()
+
+def _apply_activity_taxes(prediction, confidence, thresholds):
+    """
+    thresholds = {
+        'WALKING_UPSTAIRS': 0.65,
+        'WALKING_DOWNSTAIRS': 0.55
+    }
+    """
+    # Get the specific threshold for this prediction, default to 0.0
+    required_confidence = thresholds.get(prediction, 0.0)
+    
+    if confidence < required_confidence:
+        # If it fails the 'Stair Tax', it's almost certainly just Walking
+        return 'WALKING'
+    
+    return prediction
 
 
 _init_mlflow()
@@ -193,10 +209,10 @@ async def data_processing_pipeline(window_df: pd.DataFrame):
     intersect_with_kaggle = filter_features_to_match_kaggle(renamed_features, kaggle_csv_path=kaggle_csv_path)   
     del renamed_features  # free up memory
     feature_df = pd.DataFrame(intersect_with_kaggle)
-    feature_df_without_columns = drop_unnecessary_columns(feature_df, columns_to_drop=['angle', 'tGravityAcc-X', 'tGravityAcc-Y', 'tGravityAcc-Z', 
-                        'tBodyAcc-X', 'tBodyAcc-Y', 'tBodyAcc-Z',
-                        'fBodyAcc-X', 'fBodyAcc-Y', 'fBodyAcc-Z'])
-    return feature_df_without_columns
+    # feature_df_without_columns = drop_unnecessary_columns(feature_df, columns_to_drop=['angle', 'tGravityAcc-X', 'tGravityAcc-Y', 'tGravityAcc-Z', 
+    #                     'tBodyAcc-X', 'tBodyAcc-Y', 'tBodyAcc-Z',
+    #                     'fBodyAcc-X', 'fBodyAcc-Y', 'fBodyAcc-Z'])
+    return feature_df
 
 def drop_unnecessary_columns(df: pd.DataFrame, columns_to_drop: List[str]) -> pd.DataFrame:
     cols_to_drop = [col for col in df.columns if any(pat in col for pat in columns_to_drop)]
@@ -247,9 +263,15 @@ async def run_prediction(feature_df: pd.DataFrame):
     else:
         activity_labels = ACTIVITY_LABELS
         activity_name = activity_labels.get(predicted_label, f"Activity_{predicted_label}")
-    
+
+    stair_taxes = {
+    'WALKING_UPSTAIRS': 0.65, 
+    'WALKING_DOWNSTAIRS': 0.40
+    }   
+    activity_name_after_staircase_tax = _apply_activity_taxes(activity_name, predicted_proba, stair_taxes)
+
     return {
-        "activity": activity_name,
+        "activity": activity_name_after_staircase_tax,
         "confidence": predicted_proba,
         "prediction_index": predicted_label,
         "all_probabilities": {

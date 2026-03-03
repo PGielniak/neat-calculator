@@ -6,7 +6,7 @@ LABELS = ["WALKING", "STANDING", "SITTING", "LAYING", "WALKING_UPSTAIRS", "WALKI
 WINDOW_SIZE = 128
 THRESHOLD = 0.9 * WINDOW_SIZE  # 115.2
 
-df = pd.read_csv("prediction_report_capped.csv")
+df = pd.read_csv("prediction_report_validation_set.csv")
 
 def get_actual_label(row):
     for label in LABELS:
