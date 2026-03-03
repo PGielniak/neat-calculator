@@ -23,7 +23,7 @@ if MLFLOW_TRACKING_URI is None:
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 print(f"✓ MLflow tracking URI set to: {MLFLOW_TRACKING_URI}")
 
-MODEL_NAME = os.getenv("MODEL_NAME", "HAR_xgboost")
+MODEL_NAME = os.getenv("MODEL_NAME", "har-xgboost")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "production")
 
 model = None

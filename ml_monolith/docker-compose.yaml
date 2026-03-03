@@ -35,19 +35,6 @@ services:
     depends_on:
       - mlflow
 
-  model-training-webhook:
-    build: .
-    image: ml-monolith:latest
-    command: uvicorn model_training.webhook:app --host 0.0.0.0 --port 8001 --log-level info
-    env_file:
-      - .env
-    ports:
-      - "8001:8001"
-    restart: unless-stopped
-    depends_on:
-      - mlflow
-      - data-pipeline-webhook
-
   prediction-api:
     build: .
     image: ml-monolith:latest
@@ -60,5 +47,3 @@ services:
     depends_on:
       - mlflow
       - data-pipeline-webhook
-      - model-training-webhook
-
