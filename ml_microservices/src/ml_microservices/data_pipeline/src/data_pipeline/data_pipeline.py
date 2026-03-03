@@ -1,6 +1,7 @@
 import logging
 import uuid
 import os
+import importlib.resources
 import pandas as pd
 import argparse
 import hashlib
@@ -173,6 +174,10 @@ def _process_sensor_data(
         raw_data_dir,
         len(skipped_files),
     )
+
+    if not kaggle_csv_path:
+        kaggle_csv_path = str(importlib.resources.files("shared").joinpath("kaggle.csv"))
+
     sensor_data = process_raw_sensor_data(
         raw_data_file_dir=raw_data_dir,
         labels_csv_path=labels_csv_path,
@@ -305,7 +310,7 @@ if __name__ == "__main__":
     argparser.add_argument("--raw_data_storage_account_container_uri", type=str, required=False)
     argparser.add_argument("--labels_csv_path", type=str, required=False)
     argparser.add_argument("--labels_storage_account_blob_uri", type=str, required=False)
-    argparser.add_argument("--kaggle_csv_path", type=str, required=False, default="kaggle.csv")
+    argparser.add_argument("--kaggle_csv_path", type=str, required=False, default="")
     argparser.add_argument("--pipeline_run_id", type=str, required=False, default="")
     argparser.add_argument("--use_v2_features", action="store_true", default=False)
     args = argparser.parse_args()

@@ -1,5 +1,5 @@
 from requests import get
-from infra.db.database_utils import DatabaseEngine, DatabaseRepository, DatabaseFactory, get_postgres_db_engine
+from database.database_utils import DatabaseEngine, DatabaseRepository, DatabaseFactory, get_postgres_db_engine
 import pandas as pd
 import argparse
 
