@@ -140,9 +140,16 @@ def validate_and_cache_api_key(raw_key: str) -> bool:
         return cached.get("valid") == "1"
     try:
         response = requests.post(API_KEY_SERVICE_URL, json={"raw_key": raw_key}, timeout=5)
+        response.raise_for_status()
         data = response.json()
+    except requests.HTTPError as exc:
+        logger.error(f"API key validation service returned an error: {exc}")
+        return False
     except Exception as exc:
         logger.error(f"API key validation failed: {exc}")
+        return False
+    if not isinstance(data, dict) or "valid" not in data:
+        logger.error("Unexpected response shape from API key service: missing 'valid' field")
         return False
     get_cache().hset(cache_key, mapping={
         "valid": "1" if data.get("valid") else "0",
