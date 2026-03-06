@@ -1,7 +1,7 @@
 from json import load
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, field_validator, ValidationError
-from typing import List
+from typing import List, Annotated
 import pandas as pd
 import mlflow
 from mlflow import MlflowClient
@@ -14,6 +14,8 @@ from shared.process_raw_data import remove_duplicates, resample_data, create_sli
 load_dotenv()
 from prediction_api.load_model import load_production_model
 import importlib.resources
+from yarl import URL
+import requests
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -21,11 +23,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 MODEL_NAME = os.getenv("MODEL_NAME", "har-randomforest01")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "production")
 
+API_KEY_SERVICE_URL = os.getenv("API_KEY_SERVICE_URL", "http://localhost:8007/api-keys/validate")
+
 model = None
 scaler = None
 label_encoder = None
 model_info = None
-
 
 def _init_mlflow() -> None:
     uri = os.getenv("MLFLOW_BACKEND_STORE_URI")
@@ -173,8 +176,19 @@ class PredictionRequest(BaseModel):
         return v
 
 @app.post("/predict")
-async def predict(payload: PredictionRequest):
+async def predict(payload: PredictionRequest, x_api_key_header: Annotated[str | None, Header(alias="X-Api-Key")] = None):
+
+    if not x_api_key_header:
+        raise HTTPException(status_code=401, detail="Failed to authenticate the request.")
+    
+    if not validate_api_key_header(x_api_key_header):
+        raise HTTPException(status_code=401, detail="Failed to authenticate the request.")
     # Convert Pydantic models to dictionaries before creating DataFrame
+    
+    x_api_key_prefix = x_api_key_header.split("_")[0]
+
+    logger.info(f"Proceeding with prediction for api key prefix {x_api_key_prefix}")
+    
     samples_dict = [sample.model_dump() for sample in payload.samples]
     df = pd.DataFrame(samples_dict)
 
@@ -194,7 +208,38 @@ async def predict(payload: PredictionRequest):
 
     return predictions
 
+async def validate_api_key_header(x_api_key_header: str) -> bool:
+    
+    body = {'raw_key': x_api_key_header}
+    try:
+        # Add a timeout so auth failures don't hang the request
+        response = requests.post(url=API_KEY_SERVICE_URL, data=body, timeout=5)
+    except requests.RequestException as exc:
+        logger.error(f"API key validation request failed: {exc}")
+        return False
 
+    logger.info(f"Validation Response status code: {response.status_code}")
+
+    # Treat non-200 responses as failed validation
+    if response.status_code != 200:
+        return False
+
+    try:
+        json_payload = response.json()
+    except ValueError:
+        logger.error("API key validation response is not valid JSON.")
+        return False
+
+    # Expecting a JSON object with a 'valid' field, e.g. {'valid': true}
+    if isinstance(json_payload, dict):
+        return bool(json_payload.get("valid", False))
+
+    # Fallback: if the payload itself is a boolean
+    if isinstance(json_payload, bool):
+        return json_payload
+
+    # Any other unexpected format is treated as invalid
+    return False
 async def data_processing_pipeline(window_df: pd.DataFrame):
     deduped_data = remove_duplicates(window_df, sensor_cols=sensor_cols)
     resampled_data = resample_data(deduped_data, target_freq=50, sensor_cols=sensor_cols)
