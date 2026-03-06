@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import logging
 
@@ -37,13 +37,14 @@ def get_service() -> ApiKeyService:
 # --- Schemas ---
 
 class GenerateApiKeyRequest(BaseModel):
-    prefix: str = "ak"
+    prefix: str = Field(default="ak", max_length=10)
     rate_limit_req_no: int = 30
     rate_limit_interval_minutes: int = 1
     comment: Optional[str] = None
 
 class GenerateApiKeyResponse(BaseModel):
     raw_key: str
+    prefix: str
 
 class ValidateApiKeyRequest(BaseModel):
     raw_key: str
@@ -59,8 +60,8 @@ def generate_api_key(
     request: GenerateApiKeyRequest,
     service: ApiKeyService = Depends(get_service)
 ):
-    raw_key = service.generate_api_key(request.prefix, request.rate_limit_req_no, request.rate_limit_interval_minutes, request.comment)
-    return GenerateApiKeyResponse(raw_key=raw_key)
+    raw_key, prefix = service.generate_api_key(request.prefix, request.rate_limit_req_no, request.rate_limit_interval_minutes, request.comment)
+    return GenerateApiKeyResponse(raw_key=raw_key, prefix=prefix)
 
 
 @app.post("/api-keys/validate", response_model=bool)
