@@ -1,7 +1,7 @@
 from json import load
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, field_validator, ValidationError
-from typing import List
+from typing import List, Annotated
 import pandas as pd
 import mlflow
 from mlflow import MlflowClient
@@ -14,6 +14,8 @@ from shared.process_raw_data import remove_duplicates, resample_data, create_sli
 load_dotenv()
 from prediction_api.load_model import load_production_model
 import importlib.resources
+from yarl import URL
+import requests
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -21,11 +23,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 MODEL_NAME = os.getenv("MODEL_NAME", "har-randomforest01")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "production")
 
+API_KEY_SERVICE_URL = os.getenv("API_KEY_SERVICE_URL", "http://localhost:8007/api-keys/validate")
+
 model = None
 scaler = None
 label_encoder = None
 model_info = None
-
 
 def _init_mlflow() -> None:
     uri = os.getenv("MLFLOW_BACKEND_STORE_URI")
@@ -173,8 +176,19 @@ class PredictionRequest(BaseModel):
         return v
 
 @app.post("/predict")
-async def predict(payload: PredictionRequest):
+async def predict(payload: PredictionRequest, x_api_key_header: Annotated[str | None, Header(alias="X-Api-Key")] = None):
+
+    if not x_api_key_header:
+        return HTTPException(status_code=401,detail="Failed to authenticate the request.")
+    
+    if not validate_api_key_header(x_api_key_header):
+        return HTTPException(status_code=401,detail="Failed to authenticate the request.")
     # Convert Pydantic models to dictionaries before creating DataFrame
+    
+    x_api_key_prefix = x_api_key_header.split("_")[0]
+
+    logger.info(f"Proceeding with prediction for api key prefix {x_api_key_prefix}")
+    
     samples_dict = [sample.model_dump() for sample in payload.samples]
     df = pd.DataFrame(samples_dict)
 
@@ -193,6 +207,13 @@ async def predict(payload: PredictionRequest):
     logger.info(f"Prediction: activity={predictions.get('activity')}, confidence={predictions.get('confidence'):.4f}")
 
     return predictions
+
+async def validate_api_key_header(x_api_key_header: str) -> bool:
+    
+    body = {'raw_key': x_api_key_header}
+    response = requests.post(url=API_KEY_SERVICE_URL, data=body)
+    logger.info(f"Validation Repsonse: {response}")
+    return response
 
 
 async def data_processing_pipeline(window_df: pd.DataFrame):

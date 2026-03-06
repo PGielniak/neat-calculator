@@ -9,6 +9,9 @@ authors = [
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pandas==2.3.3",
+    "uvicorn>=0.41.0",
+    "fastapi>=0.133.1",
+
 ]
 
 [build-system]
@@ -22,6 +25,7 @@ members = [
     "src/ml_microservices/model_training",
     "src/ml_microservices/prediction_api",
     "src/ml_microservices/shared",
+    "src/ml_microservices/api_keys",
 ]
 
 [dependency-groups]
