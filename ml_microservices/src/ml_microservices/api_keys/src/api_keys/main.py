@@ -41,8 +41,6 @@ class GenerateApiKeyRequest(BaseModel):
     rate_limit_req_no: int = 30
     rate_limit_interval_minutes: int = 1
     comment: Optional[str] = None
-    rate_limit_interval_minutes: int = 1
-    rate_limit_req_no: int = 30
 
 class GenerateApiKeyResponse(BaseModel):
     raw_key: str
