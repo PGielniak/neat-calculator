@@ -9,6 +9,8 @@ Tests cover:
   - drop_unnecessary_columns
   - _fetch_model_info
   - _init_mlflow
+  - validate_and_cache_api_key (cache-down 503)
+  - check_rate_limit (cache-down 503)
 """
 import os
 import sys
@@ -178,3 +180,71 @@ class TestInitMlflow:
         with patch("prediction_api.prediction_api.mlflow") as mock_mlflow:
             _pa._init_mlflow()
             mock_mlflow.set_tracking_uri.assert_called_once_with("sqlite:///test.db")
+
+
+# ---------------------------------------------------------------------------
+# validate_and_cache_api_key – cache-down 503
+# ---------------------------------------------------------------------------
+
+class TestValidateAndCacheApiKey:
+    def test_raises_503_on_cache_lookup_error(self):
+        mock_cache = MagicMock()
+        mock_cache.hgetall.side_effect = _pa.redis.exceptions.RedisError("connection refused")
+        with patch("prediction_api.prediction_api.get_cache", return_value=mock_cache):
+            from fastapi import HTTPException as _HTTPException
+            with pytest.raises(_HTTPException) as exc_info:
+                _pa.validate_and_cache_api_key("test-key")
+        assert exc_info.value.status_code == 503
+
+    def test_raises_503_on_cache_write_error(self):
+        mock_cache = MagicMock()
+        mock_cache.hgetall.return_value = {}  # cache miss → will call the key service
+        mock_cache.hset.side_effect = _pa.redis.exceptions.RedisError("connection refused")
+        with patch("prediction_api.prediction_api.get_cache", return_value=mock_cache), \
+             patch("prediction_api.prediction_api.requests") as mock_requests:
+            mock_requests.post.return_value.json.return_value = {"valid": True, "rate_limit_req_no": 30, "rate_limit_interval_minutes": 1}
+            from fastapi import HTTPException as _HTTPException
+            with pytest.raises(_HTTPException) as exc_info:
+                _pa.validate_and_cache_api_key("test-key")
+        assert exc_info.value.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# check_rate_limit – cache-down 503
+# ---------------------------------------------------------------------------
+
+class TestCheckRateLimit:
+    def test_raises_503_on_cache_error(self):
+        mock_cache = MagicMock()
+        mock_cache.hgetall.side_effect = _pa.redis.exceptions.RedisError("connection refused")
+        with patch("prediction_api.prediction_api.get_cache", return_value=mock_cache):
+            from fastapi import HTTPException as _HTTPException
+            with pytest.raises(_HTTPException) as exc_info:
+                _pa.check_rate_limit("prefix", "keyhash")
+        assert exc_info.value.status_code == 503
+
+    def test_raises_503_on_incr_error(self):
+        mock_cache = MagicMock()
+        mock_cache.hgetall.return_value = {"rate_limit_req_no": "30", "rate_limit_interval_minutes": "1"}
+        mock_cache.incr.side_effect = _pa.redis.exceptions.RedisError("READONLY")
+        with patch("prediction_api.prediction_api.get_cache", return_value=mock_cache):
+            from fastapi import HTTPException as _HTTPException
+            with pytest.raises(_HTTPException) as exc_info:
+                _pa.check_rate_limit("prefix", "keyhash")
+        assert exc_info.value.status_code == 503
+
+    def test_returns_true_when_within_limit(self):
+        mock_cache = MagicMock()
+        mock_cache.hgetall.return_value = {"rate_limit_req_no": "30", "rate_limit_interval_minutes": "1"}
+        mock_cache.incr.return_value = 1
+        with patch("prediction_api.prediction_api.get_cache", return_value=mock_cache):
+            result = _pa.check_rate_limit("prefix", "keyhash")
+        assert result is True
+
+    def test_returns_false_when_limit_exceeded(self):
+        mock_cache = MagicMock()
+        mock_cache.hgetall.return_value = {"rate_limit_req_no": "5", "rate_limit_interval_minutes": "1"}
+        mock_cache.incr.return_value = 6
+        with patch("prediction_api.prediction_api.get_cache", return_value=mock_cache):
+            result = _pa.check_rate_limit("prefix", "keyhash")
+        assert result is False
