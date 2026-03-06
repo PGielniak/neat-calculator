@@ -1,4 +1,3 @@
-from json import load
 from fastapi import FastAPI, HTTPException, Header, Request
 from pydantic import BaseModel, field_validator, ValidationError
 from typing import List, Annotated
