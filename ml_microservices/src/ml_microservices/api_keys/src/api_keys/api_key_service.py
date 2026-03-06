@@ -8,10 +8,11 @@ class ApiKeyService:
     def __init__(self, db: DatabaseRepository):
         self.db = db
 
-    def generate_api_key(self, prefix: str = "ak", rate_limit_req_no: int = 30, rate_limit_interval_minutes: int = 1, comment: Optional[str] = None) -> str:
+    def generate_api_key(self, prefix: str = "ak", rate_limit_req_no: int = 30, rate_limit_interval_minutes: int = 1, comment: Optional[str] = None) -> tuple[str, str]:
+        """Returns (raw_key, assigned_prefix). The assigned prefix is unique and includes a random suffix."""
         raw_key, db_obj = ApiKey.generate(prefix, rate_limit_interval_minutes, rate_limit_req_no, comment)
         self.db.save_orm_object(db_obj)
-        return raw_key
+        return raw_key, db_obj.prefix
 
     def validate_api_key(self, raw_key: str) -> bool:
         """Validate a raw API key by comparing its hash against the stored hash."""
