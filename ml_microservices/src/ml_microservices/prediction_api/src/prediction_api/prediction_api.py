@@ -135,7 +135,11 @@ def _apply_activity_taxes(prediction, confidence, thresholds):
 def validate_and_cache_api_key(raw_key: str) -> bool:
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     cache_key = f"apikey:{key_hash}"
-    cached = get_cache().hgetall(cache_key)
+    try:
+        cached = get_cache().hgetall(cache_key)
+    except redis.exceptions.RedisError as exc:
+        logger.error(f"Cache error during API key lookup: {exc}")
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
     if cached:
         return cached.get("valid") == "1"
     try:
@@ -144,28 +148,36 @@ def validate_and_cache_api_key(raw_key: str) -> bool:
     except Exception as exc:
         logger.error(f"API key validation failed: {exc}")
         return False
-    get_cache().hset(cache_key, mapping={
-        "valid": "1" if data.get("valid") else "0",
-        "rate_limit_req_no": data.get("rate_limit_req_no", 30),
-        "rate_limit_interval_minutes": data.get("rate_limit_interval_minutes", 1),
-    })
-    get_cache().expire(cache_key, CACHE_TTL_SECONDS)
+    try:
+        get_cache().hset(cache_key, mapping={
+            "valid": "1" if data.get("valid") else "0",
+            "rate_limit_req_no": data.get("rate_limit_req_no", 30),
+            "rate_limit_interval_minutes": data.get("rate_limit_interval_minutes", 1),
+        })
+        get_cache().expire(cache_key, CACHE_TTL_SECONDS)
+    except redis.exceptions.RedisError as exc:
+        logger.error(f"Cache error during API key cache write: {exc}")
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
     return bool(data.get("valid", False))
 
 
 def check_rate_limit(prefix: str, key_hash: str) -> bool:
     """Fixed-window rate limit check using Dragonfly. Returns False if limit exceeded."""
     import time
-    cached = get_cache().hgetall(f"apikey:{key_hash}")
-    limit = int(cached.get("rate_limit_req_no", 30))
-    interval_minutes = int(cached.get("rate_limit_interval_minutes", 1))
-    interval_seconds = interval_minutes * 60
-    window = int(time.time() / interval_seconds)
-    key = f"ratelimit:{prefix}:{window}"
-    count = get_cache().incr(key)
-    if count == 1:
-        get_cache().expire(key, interval_seconds + 1)
-    return count <= limit
+    try:
+        cached = get_cache().hgetall(f"apikey:{key_hash}")
+        limit = int(cached.get("rate_limit_req_no", 30))
+        interval_minutes = int(cached.get("rate_limit_interval_minutes", 1))
+        interval_seconds = interval_minutes * 60
+        window = int(time.time() / interval_seconds)
+        key = f"ratelimit:{prefix}:{window}"
+        count = get_cache().incr(key)
+        if count == 1:
+            get_cache().expire(key, interval_seconds + 1)
+        return count <= limit
+    except redis.exceptions.RedisError as exc:
+        logger.error(f"Cache error during rate limit check: {exc}")
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again later.")
 
 
 _init_mlflow()
