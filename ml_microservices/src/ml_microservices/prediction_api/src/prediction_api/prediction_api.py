@@ -211,11 +211,35 @@ async def predict(payload: PredictionRequest, x_api_key_header: Annotated[str | 
 async def validate_api_key_header(x_api_key_header: str) -> bool:
     
     body = {'raw_key': x_api_key_header}
-    response = requests.post(url=API_KEY_SERVICE_URL, data=body)
-    logger.info(f"Validation Repsonse: {response}")
-    return response
+    try:
+        # Add a timeout so auth failures don't hang the request
+        response = requests.post(url=API_KEY_SERVICE_URL, data=body, timeout=5)
+    except requests.RequestException as exc:
+        logger.error(f"API key validation request failed: {exc}")
+        return False
 
+    logger.info(f"Validation Response status code: {response.status_code}")
 
+    # Treat non-200 responses as failed validation
+    if response.status_code != 200:
+        return False
+
+    try:
+        json_payload = response.json()
+    except ValueError:
+        logger.error("API key validation response is not valid JSON.")
+        return False
+
+    # Expecting a JSON object with a 'valid' field, e.g. {'valid': true}
+    if isinstance(json_payload, dict):
+        return bool(json_payload.get("valid", False))
+
+    # Fallback: if the payload itself is a boolean
+    if isinstance(json_payload, bool):
+        return json_payload
+
+    # Any other unexpected format is treated as invalid
+    return False
 async def data_processing_pipeline(window_df: pd.DataFrame):
     deduped_data = remove_duplicates(window_df, sensor_cols=sensor_cols)
     resampled_data = resample_data(deduped_data, target_freq=50, sensor_cols=sensor_cols)
