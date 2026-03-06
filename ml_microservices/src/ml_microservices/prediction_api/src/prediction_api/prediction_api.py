@@ -179,10 +179,10 @@ class PredictionRequest(BaseModel):
 async def predict(payload: PredictionRequest, x_api_key_header: Annotated[str | None, Header(alias="X-Api-Key")] = None):
 
     if not x_api_key_header:
-        return HTTPException(status_code=401,detail="Failed to authenticate the request.")
+        raise HTTPException(status_code=401, detail="Failed to authenticate the request.")
     
     if not validate_api_key_header(x_api_key_header):
-        return HTTPException(status_code=401,detail="Failed to authenticate the request.")
+        raise HTTPException(status_code=401, detail="Failed to authenticate the request.")
     # Convert Pydantic models to dictionaries before creating DataFrame
     
     x_api_key_prefix = x_api_key_header.split("_")[0]
