@@ -69,8 +69,10 @@ def generate_api_key(
 
 
 @app.post("/api-keys/validate", response_model=ValidateApiKeyResponse)
-def validate_api_key(request: ValidateApiKeyRequest, service: ApiKeyService = 
-  Depends(get_service)):
+def validate_api_key(
+    request: ValidateApiKeyRequest,
+    service: ApiKeyService = Depends(get_service),
+):
     api_key = service.get_api_key_details(request.raw_key)  # returns None or ApiKey
     if api_key is None:
         return ValidateApiKeyResponse(valid=False)
