@@ -1,0 +1,292 @@
+.
+├── data_collection
+│   ├── app
+│   │   ├── build.gradle
+│   │   ├── gradle
+│   │   │   └── wrapper
+│   │   │       ├── gradle-wrapper.jar
+│   │   │       └── gradle-wrapper.properties
+│   │   ├── gradle.properties
+│   │   ├── gradlew
+│   │   ├── gradlew.bat
+│   │   ├── settings.gradle
+│   │   └── src
+│   │       ├── build.gradle
+│   │       └── main
+│   │           ├── AndroidManifest.xml
+│   │           ├── kotlin
+│   │           │   └── com
+│   │           │       └── example
+│   │           │           └── hellom8
+│   │           │               ├── MainActivity.kt
+│   │           │               ├── SensorData.kt
+│   │           │               └── TimestampOverlay.kt
+│   │           └── res
+│   │               └── layout
+│   │                   └── activity_main.xml
+│   ├── pilot
+│   │   ├── app.html
+│   │   ├── docker_build_push.sh
+│   │   ├── docker-compose.yaml
+│   │   ├── Dockerfile
+│   │   ├── pyvenv.cfg
+│   │   ├── README.md
+│   │   ├── requirements.txt
+│   │   └── server.py
+│   ├── README.md
+│   └── scripts
+│       ├── build.ps1
+│       └── pull_data.ps1
+├── device
+│   ├── phone-holder.20251230-111119.FCBak
+│   ├── phone-holder-Body.3mf
+│   ├── phone-holder-Body.obj
+│   └── phone-holder.FCStd
+├── kaggle_data
+│   ├── human-activity-recognition-with-smartphones
+│   │   └── test.csv
+│   └── human-activity-recognition-with-smartphones.zip
+├── ml_microservices
+│   ├── confusion_matrix.csv
+│   ├── docker
+│   │   ├── api_keys
+│   │   │   └── Dockerfile
+│   │   ├── data_pipeline
+│   │   │   └── Dockerfile
+│   │   ├── model_training
+│   │   │   └── Dockerfile
+│   │   └── prediction_api
+│   │       └── Dockerfile
+│   ├── docker-compose.yaml
+│   ├── htmlcov
+│   │   ├── class_index.html
+│   │   ├── coverage_html_cb_dd2e7eb5.js
+│   │   ├── favicon_32_cb_c827f16f.png
+│   │   ├── function_index.html
+│   │   ├── index.html
+│   │   ├── keybd_closed_cb_900cfef5.png
+│   │   ├── status.json
+│   │   ├── style_cb_9ff733b0.css
+│   │   ├── z_22310cd7bdf7e3c0_database_service_py.html
+│   │   ├── z_22310cd7bdf7e3c0_data_pipeline_py.html
+│   │   ├── z_22310cd7bdf7e3c0___init___py.html
+│   │   ├── z_22310cd7bdf7e3c0_insert_kaggle_data_into_db_py.html
+│   │   ├── z_22310cd7bdf7e3c0_models_py.html
+│   │   ├── z_22310cd7bdf7e3c0_webhook_py.html
+│   │   ├── z_2b987cb201f93f23_database_utils_py.html
+│   │   ├── z_2b987cb201f93f23___init___py.html
+│   │   ├── z_4528706235382212___init___py.html
+│   │   ├── z_4528706235382212_train_model_py.html
+│   │   ├── z_4528706235382212_webhook_py.html
+│   │   ├── z_5dae077125d783f2_helper_functions_py.html
+│   │   ├── z_5dae077125d783f2___init___py.html
+│   │   ├── z_5dae077125d783f2_process_raw_data_py.html
+│   │   ├── z_5dae077125d783f2_storage_account_helpers_py.html
+│   │   ├── z_ff08c88579f8ffa1___init___py.html
+│   │   ├── z_ff08c88579f8ffa1_load_model_py.html
+│   │   └── z_ff08c88579f8ffa1_prediction_api_py.html
+│   ├── process_raw_data.log
+│   ├── pyproject.toml
+│   ├── README.md
+│   ├── run_tests.sh
+│   ├── src
+│   │   └── ml_microservices
+│   │       ├── api_keys
+│   │       │   ├── pyproject.toml
+│   │       │   ├── README.md
+│   │       │   └── src
+│   │       │       └── api_keys
+│   │       │           ├── api_key_models.py
+│   │       │           ├── api_key_service.py
+│   │       │           ├── __init__.py
+│   │       │           ├── main.py
+│   │       │           ├── __pycache__
+│   │       │           │   ├── api_key_models.cpython-312.pyc
+│   │       │           │   ├── api_key_service.cpython-312.pyc
+│   │       │           │   ├── __init__.cpython-312.pyc
+│   │       │           │   └── main.cpython-312.pyc
+│   │       │           └── py.typed
+│   │       ├── database
+│   │       │   ├── pyproject.toml
+│   │       │   ├── README.md
+│   │       │   └── src
+│   │       │       └── database
+│   │       │           ├── database_utils.py
+│   │       │           ├── __init__.py
+│   │       │           ├── __pycache__
+│   │       │           │   ├── database_utils.cpython-312.pyc
+│   │       │           │   └── __init__.cpython-312.pyc
+│   │       │           └── py.typed
+│   │       ├── data_pipeline
+│   │       │   ├── entrypoint.sh
+│   │       │   ├── __pycache__
+│   │       │   │   └── webhook.cpython-312.pyc
+│   │       │   ├── pyproject.toml
+│   │       │   ├── README.md
+│   │       │   ├── REFACTOR_NOTES.md
+│   │       │   └── src
+│   │       │       └── data_pipeline
+│   │       │           ├── database_service.py
+│   │       │           ├── data_pipeline.py
+│   │       │           ├── __init__.py
+│   │       │           ├── insert_kaggle_data_into_db.py
+│   │       │           ├── models.py
+│   │       │           ├── __pycache__
+│   │       │           │   ├── database_service.cpython-312.pyc
+│   │       │           │   ├── data_pipeline.cpython-312.pyc
+│   │       │           │   ├── __init__.cpython-312.pyc
+│   │       │           │   ├── models.cpython-312.pyc
+│   │       │           │   └── webhook.cpython-312.pyc
+│   │       │           ├── py.typed
+│   │       │           └── webhook.py
+│   │       ├── __init__.py
+│   │       ├── model_training
+│   │       │   ├── pyproject.toml
+│   │       │   ├── README.md
+│   │       │   └── src
+│   │       │       └── model_training
+│   │       │           ├── __init__.py
+│   │       │           ├── __pycache__
+│   │       │           │   ├── __init__.cpython-312.pyc
+│   │       │           │   ├── train_model.cpython-312.pyc
+│   │       │           │   └── webhook.cpython-312.pyc
+│   │       │           ├── py.typed
+│   │       │           ├── train_model.py
+│   │       │           └── webhook.py
+│   │       ├── prediction_api
+│   │       │   ├── pyproject.toml
+│   │       │   ├── README.md
+│   │       │   └── src
+│   │       │       └── prediction_api
+│   │       │           ├── __init__.py
+│   │       │           ├── load_model.py
+│   │       │           ├── prediction_api.py
+│   │       │           ├── __pycache__
+│   │       │           │   ├── __init__.cpython-312.pyc
+│   │       │           │   ├── load_model.cpython-312.pyc
+│   │       │           │   └── prediction_api.cpython-312.pyc
+│   │       │           └── py.typed
+│   │       ├── py.typed
+│   │       └── shared
+│   │           ├── pyproject.toml
+│   │           ├── README.md
+│   │           └── src
+│   │               └── shared
+│   │                   ├── helper_functions.py
+│   │                   ├── __init__.py
+│   │                   ├── kaggle.csv
+│   │                   ├── process_raw_data.py
+│   │                   ├── __pycache__
+│   │                   │   ├── helper_functions.cpython-312.pyc
+│   │                   │   ├── __init__.cpython-312.pyc
+│   │                   │   ├── process_raw_data.cpython-312.pyc
+│   │                   │   └── storage_account_helpers.cpython-312.pyc
+│   │                   ├── py.typed
+│   │                   └── storage_account_helpers.py
+│   ├── TESTING.md
+│   ├── test-report.xml
+│   ├── tests
+│   │   ├── conftest.py
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   │   ├── conftest.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── __init__.cpython-312.pyc
+│   │   │   ├── test_database_service.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_database_utils.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_data_pipeline.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_helper_functions.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_load_model.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_prediction_api.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_process_raw_data.cpython-312-pytest-9.0.2.pyc
+│   │   │   ├── test_storage_account_helpers.cpython-312-pytest-9.0.2.pyc
+│   │   │   └── test_train_model.cpython-312-pytest-9.0.2.pyc
+│   │   ├── test_database_service.py
+│   │   ├── test_database_utils.py
+│   │   ├── test_data_pipeline.py
+│   │   ├── test_helper_functions.py
+│   │   ├── test_load_model.py
+│   │   ├── test_prediction_api.py
+│   │   ├── test_process_raw_data.py
+│   │   ├── test_storage_account_helpers.py
+│   │   └── test_train_model.py
+│   └── uv.lock
+├── ml_monolith
+│   ├── data_pipeline
+│   │   ├── database.py
+│   │   ├── data_pipeline.py
+│   │   ├── entrypoint.ps1
+│   │   ├── helper_functions.py
+│   │   ├── __init__.py
+│   │   ├── insert_kaggle_data_into_db.py
+│   │   ├── models.py
+│   │   ├── process_raw_data.py
+│   │   ├── __pycache__
+│   │   │   ├── helper_functions.cpython-312.pyc
+│   │   │   ├── __init__.cpython-312.pyc
+│   │   │   ├── process_raw_data.cpython-312.pyc
+│   │   │   └── storage_account_helpers.cpython-312.pyc
+│   │   ├── readme.md
+│   │   ├── storage_account_helpers.py
+│   │   └── webhook.py
+│   ├── data_preprocessing
+│   │   ├── add_timestamp_to_video.py
+│   │   ├── brudnopis.ipynb
+│   │   ├── compare_datasets.ipynb
+│   │   ├── data_description.md
+│   │   ├── gyro_accelerometer_data_vis.ipynb
+│   │   ├── gyro_acc_fe_features.ipynb
+│   │   ├── gyro_acc_fe_resampling.ipynb
+│   │   ├── gyro_acc_har_features.csv
+│   │   ├── gyro_acc_resampled_sliding_window.csv
+│   │   ├── kaggle_data_analysis.ipynb
+│   │   ├── labeled_sensor_data_08022026.json
+│   │   ├── labeler.py
+│   │   ├── labels26012026.csv
+│   │   ├── labels.csv
+│   │   ├── merge_files.py
+│   │   ├── merge_sensor_data.py
+│   │   ├── Readme.md
+│   │   └── video_with_overlay.py
+│   ├── deploy_locally.md
+│   ├── docker-compose.yaml
+│   ├── Dockerfile
+│   ├── infra
+│   │   └── db
+│   │       └── database_utils.py
+│   ├── kaggle.csv
+│   ├── model_training
+│   │   ├── analyze_data.ipynb
+│   │   ├── combined_dataset.csv
+│   │   ├── train_model.ipynb
+│   │   ├── train_model.py
+│   │   ├── webhook.py
+│   │   └── wnioski.md
+│   ├── prediction
+│   │   ├── load_model.py
+│   │   ├── prediction_api.py
+│   │   ├── prediction.ipynb
+│   │   └── session_09022026.ipynb
+│   ├── requirements-minimal.txt
+│   └── requirements.txt
+├── neat_dashboard
+│   ├── call_api_with_noisy_data.ipynb
+│   ├── confusion_matrix.png
+│   ├── data_generation.ipynb
+│   ├── merged_labeled_data.csv
+│   ├── neat_dashboard
+│   │   ├── downloaded_data
+│   │   │   └── 03-03-2026
+│   │   ├── generation_seed
+│   │   └── labeled_data
+│   ├── prepare_data_generation_seed.ipynb
+│   ├── process_raw_data.log
+│   ├── __pycache__
+│   │   └── report_statistics.cpython-312.pyc
+│   ├── report_statistics.py
+│   ├── sample_benchmark_data.ipynb
+│   ├── validation_set.csv
+│   └── windows.csv
+├── process_raw_data.log
+└── tree.txt
+
+69 directories, 221 files
