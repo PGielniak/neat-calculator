@@ -266,16 +266,21 @@ class DatabaseRepository:
         """Check if table exists."""
         return self.engine.table_exists(table_name)
     
+
     def save_orm_object(self, obj) -> None:
         """Save a SQLAlchemy ORM model instance using a session."""
         with self.engine.Session() as session:
             session.add(obj)
             session.commit()
+            session.expunge(obj)  #
 
     def get_orm_object(self, model, **filters):
         """Retrieve a single SQLAlchemy ORM model instance matching the given filters."""
         with self.engine.Session() as session:
-            return session.query(model).filter_by(**filters).first()
+            result = session.query(model).filter_by(**filters).first()
+            if result is not None:
+                session.expunge(result)  # Detach the object from the session
+            return result
 
     def close(self) -> None:
         """Close database connection."""

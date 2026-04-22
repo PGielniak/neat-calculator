@@ -88,7 +88,7 @@ async def handle_webhook(
     labels_storage_account_blob_uri = payload.labels_storage_account_blob_uri if payload.labels_storage_account_blob_uri else ""
     kaggle_csv_path = payload.kaggle_csv_path if payload.kaggle_csv_path else ""
     logger.info(f"Triggering data pipeline run: {pipeline_run_id} with payload: {payload} (debug={debug})")
-
+    print("")
     if debug:
         logger.info(f"Running data pipeline {pipeline_run_id} synchronously in DEBUG MODE")
         try:
