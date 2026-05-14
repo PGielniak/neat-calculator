@@ -2,7 +2,6 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional
 import logging
-
 from database.database_utils import get_postgres_db_engine, DatabaseRepository
 from api_keys.api_key_service import ApiKeyService
 from api_keys.api_key_models import Base
@@ -52,6 +51,11 @@ class ValidateApiKeyRequest(BaseModel):
 class ToggleApiKeyRequest(BaseModel):
     prefix: str
 
+class ValidateApiKeyResponse(BaseModel):
+    valid: bool
+    rate_limit_req_no: int = 30
+    rate_limit_interval_minutes: int = 1
+   
 
 # --- Endpoints ---
 
@@ -64,19 +68,23 @@ def generate_api_key(
     return GenerateApiKeyResponse(raw_key=raw_key, prefix=prefix)
 
 
-@app.post("/api-keys/validate", response_model=bool)
+@app.post("/api-keys/validate", response_model=ValidateApiKeyResponse)
 def validate_api_key(
     request: ValidateApiKeyRequest,
-    service: ApiKeyService = Depends(get_service)
+    service: ApiKeyService = Depends(get_service),
 ):
-    return service.validate_api_key(request.raw_key)
+    api_key = service.get_api_key_details(request.raw_key)  # returns None or ApiKey
+    if api_key is None:
+        return ValidateApiKeyResponse(valid=False)
+    return ValidateApiKeyResponse(
+        valid=True,
+        rate_limit_req_no=api_key.rate_limit_req_no,
+        rate_limit_interval_minutes=api_key.rate_limit_interval_minutes,
+    )
 
 
 @app.patch("/api-keys/disable")
-def disable_api_key(
-    request: ToggleApiKeyRequest,
-    service: ApiKeyService = Depends(get_service)
-):
+def disable_api_key(request: ToggleApiKeyRequest, service: ApiKeyService = Depends(get_service)):
     found = service.disable_api_key(request.prefix)
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"API key with prefix '{request.prefix}' not found")

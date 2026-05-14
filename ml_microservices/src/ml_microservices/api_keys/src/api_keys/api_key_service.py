@@ -46,6 +46,20 @@ class ApiKeyService:
         self.db.update_record(ApiKey.__tablename__, "prefix", prefix, {"enabled": True})
         return True
 
+    def get_api_key_details(self, raw_key: str) -> Optional[ApiKey]:
+        """Validate a raw API key and return the full ApiKey object, or None if invalid/disabled."""
+        parts = raw_key.split("_", 1)
+        if len(parts) != 2:
+            return None
+        prefix, secret = parts
+        api_key = self.db.get_orm_object(ApiKey, prefix=prefix)
+        if api_key is None or not api_key.enabled:
+            return None
+        hashed = hashlib.sha256(secret.encode()).hexdigest()
+        if hashed != api_key.hashed_secret:
+            return None
+        return api_key
+
     def get_api_key_by_prefix(self, prefix: str) -> Optional[ApiKey]:
         """Retrieve an ApiKey instance by its prefix."""
         return self.db.get_orm_object(ApiKey, prefix=prefix)

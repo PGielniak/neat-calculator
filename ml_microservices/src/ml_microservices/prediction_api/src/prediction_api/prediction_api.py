@@ -1,5 +1,4 @@
-from json import load
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from pydantic import BaseModel, field_validator, ValidationError
 from typing import List, Annotated
 import pandas as pd
@@ -16,6 +15,11 @@ from prediction_api.load_model import load_production_model
 import importlib.resources
 from yarl import URL
 import requests
+import hashlib
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+import redis
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -24,11 +28,21 @@ MODEL_NAME = os.getenv("MODEL_NAME", "har-randomforest01")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "production")
 
 API_KEY_SERVICE_URL = os.getenv("API_KEY_SERVICE_URL", "http://localhost:8007/api-keys/validate")
+DRAGONFLY_URL = os.getenv("DRAGONFLY_URL", "redis://127.0.0.1:6379")
+CACHE_TTL_SECONDS = int(os.getenv("API_KEY_CACHE_TTL", 300))  # 5 min default
 
 model = None
 scaler = None
 label_encoder = None
 model_info = None
+
+_cache: redis.Redis | None = None
+
+def get_cache() -> redis.Redis:
+    global _cache
+    if _cache is None:
+        _cache = redis.from_url(DRAGONFLY_URL, decode_responses=True)
+    return _cache
 
 def _init_mlflow() -> None:
     uri = os.getenv("MLFLOW_BACKEND_STORE_URI")
@@ -118,12 +132,50 @@ def _apply_activity_taxes(prediction, confidence, thresholds):
     
     return prediction
 
+def validate_and_cache_api_key(raw_key: str) -> bool:
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    cache_key = f"apikey:{key_hash}"
+    cached = get_cache().hgetall(cache_key)
+    if cached:
+        return cached.get("valid") == "1"
+    try:
+        response = requests.post(API_KEY_SERVICE_URL, json={"raw_key": raw_key}, timeout=5)
+        data = response.json()
+    except Exception as exc:
+        logger.error(f"API key validation failed: {exc}")
+        return False
+    get_cache().hset(cache_key, mapping={
+        "valid": "1" if data.get("valid") else "0",
+        "rate_limit_req_no": data.get("rate_limit_req_no", 30),
+        "rate_limit_interval_minutes": data.get("rate_limit_interval_minutes", 1),
+    })
+    get_cache().expire(cache_key, CACHE_TTL_SECONDS)
+    return bool(data.get("valid", False))
+
+
+def check_rate_limit(prefix: str, key_hash: str) -> bool:
+    """Fixed-window rate limit check using Dragonfly. Returns False if limit exceeded."""
+    import time
+    cached = get_cache().hgetall(f"apikey:{key_hash}")
+    limit = int(cached.get("rate_limit_req_no", 30))
+    interval_minutes = int(cached.get("rate_limit_interval_minutes", 1))
+    interval_seconds = interval_minutes * 60
+    window = int(time.time() / interval_seconds)
+    key = f"ratelimit:{prefix}:{window}"
+    count = get_cache().incr(key)
+    if count == 1:
+        get_cache().expire(key, interval_seconds + 1)
+    return count <= limit
+
 
 _init_mlflow()
 _load_models()
 
+limiter = Limiter(key_func=get_remote_address, storage_uri=DRAGONFLY_URL)
 
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 WINDOW_SIZE = 128
 
@@ -138,7 +190,8 @@ ACTIVITY_LABELS = {
 }
 
 @app.get("/health")
-async def health():
+@limiter.limit("1/minute")
+async def health(request: Request):
     """Health check endpoint that shows model status"""
     return {
         "status": "healthy",
@@ -176,16 +229,20 @@ class PredictionRequest(BaseModel):
         return v
 
 @app.post("/predict")
-async def predict(payload: PredictionRequest, x_api_key_header: Annotated[str | None, Header(alias="X-Api-Key")] = None):
+@limiter.limit("120/minute")
+async def predict(request: Request, payload: PredictionRequest, x_api_key_header: Annotated[str | None, Header(alias="X-Api-Key")] = None):
 
     if not x_api_key_header:
         raise HTTPException(status_code=401, detail="Failed to authenticate the request.")
-    
-    if not validate_api_key_header(x_api_key_header):
+
+    if not validate_and_cache_api_key(x_api_key_header):
         raise HTTPException(status_code=401, detail="Failed to authenticate the request.")
-    # Convert Pydantic models to dictionaries before creating DataFrame
-    
+
     x_api_key_prefix = x_api_key_header.split("_")[0]
+    key_hash = hashlib.sha256(x_api_key_header.encode()).hexdigest()
+
+    if not check_rate_limit(x_api_key_prefix, key_hash):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded.")
 
     logger.info(f"Proceeding with prediction for api key prefix {x_api_key_prefix}")
     
@@ -208,38 +265,6 @@ async def predict(payload: PredictionRequest, x_api_key_header: Annotated[str | 
 
     return predictions
 
-async def validate_api_key_header(x_api_key_header: str) -> bool:
-    
-    body = {'raw_key': x_api_key_header}
-    try:
-        # Add a timeout so auth failures don't hang the request
-        response = requests.post(url=API_KEY_SERVICE_URL, data=body, timeout=5)
-    except requests.RequestException as exc:
-        logger.error(f"API key validation request failed: {exc}")
-        return False
-
-    logger.info(f"Validation Response status code: {response.status_code}")
-
-    # Treat non-200 responses as failed validation
-    if response.status_code != 200:
-        return False
-
-    try:
-        json_payload = response.json()
-    except ValueError:
-        logger.error("API key validation response is not valid JSON.")
-        return False
-
-    # Expecting a JSON object with a 'valid' field, e.g. {'valid': true}
-    if isinstance(json_payload, dict):
-        return bool(json_payload.get("valid", False))
-
-    # Fallback: if the payload itself is a boolean
-    if isinstance(json_payload, bool):
-        return json_payload
-
-    # Any other unexpected format is treated as invalid
-    return False
 async def data_processing_pipeline(window_df: pd.DataFrame):
     deduped_data = remove_duplicates(window_df, sensor_cols=sensor_cols)
     resampled_data = resample_data(deduped_data, target_freq=50, sensor_cols=sensor_cols)
